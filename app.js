@@ -373,6 +373,24 @@ function getSubmissionCorrectionContact(submission = {}) {
   };
 }
 
+function normalizeSubjectName(value = '') {
+  return (value || '').toString().trim().toLowerCase();
+}
+
+function getQuestionSubjectLabel(question = {}) {
+  return (question._subject || question.subject || 'General').toString().trim() || 'General';
+}
+
+function buildCorrectionShareLinksText(quiz, submission) {
+  const resultUrl = buildCertificateVerificationUrl(quiz, submission);
+  const correctionUrl = buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true });
+  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission).filter((item) => item.total > 0);
+  const subjectLines = breakdown.length > 1
+    ? breakdown.map((item) => `- ${item.name}: ${buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true, correctionSubject: item.name })}`).join('\n')
+    : '';
+  return `Result link: ${resultUrl}\nCorrection PDF: ${correctionUrl}${subjectLines ? `\nSubject PDFs:\n${subjectLines}` : ''}\n`;
+}
+
 function buildCorrectionShareMessage(submission, quiz) {
   const subjectLinks = buildCorrectionShareLinksText(quiz, submission);
   const requestLine = submission.correctionRequested
@@ -397,6 +415,9 @@ function getSubmissionCorrectionShareMeta(submission = {}) {
   }
   if (status === 'emailed') {
     return { label: 'Email opened', timestamp: submission.correctionEmailedAt || '' };
+  }
+  if (status === 'downloaded') {
+    return { label: 'PDF downloaded', timestamp: submission.correctionDownloadedAt || '' };
   }
   if (status === 'pending' || submission.correctionRequested) {
     return { label: 'Requested', timestamp: submission.correctionRequestedAt || '' };
@@ -1659,7 +1680,10 @@ function render() {
       state.pendingResultLookup = null;
       setTimeout(async () => {
         if (canUseNetworkSync()) await pullNetworkState(true);
-        showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, false);
+        showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, false, {
+          autoDownloadCorrection: pending.downloadCorrection,
+          correctionSubject: pending.correctionSubject || ''
+        });
       }, 50);
     }
   }, 0);
@@ -4327,6 +4351,22 @@ function buildCorrectionPdfHtml(submission, quiz, opts = {}) {
   `);
 }
 
+function buildCorrectionQuestionEntries(submission, opts = {}) {
+  const requestedSubject = normalizeSubjectName(opts.subjectName || '');
+  const entries = (submission?.allQuestions || []).map((question, index) => ({
+    question,
+    originalIndex: index,
+    subject: getQuestionSubjectLabel(question)
+  }));
+  if (!requestedSubject) return { entries, subjectName: '', matchedRequestedSubject: true };
+  const filtered = entries.filter((entry) => normalizeSubjectName(entry.subject) === requestedSubject);
+  return {
+    entries: filtered.length ? filtered : entries,
+    subjectName: filtered.length ? filtered[0].subject : '',
+    matchedRequestedSubject: filtered.length > 0
+  };
+}
+
 function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF is not loaded.');
   const { jsPDF } = window.jspdf;
@@ -4335,7 +4375,13 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   const pageHeight = pdf.internal.pageSize.getHeight();
   const margin = 12;
   const usableWidth = pageWidth - margin * 2;
-  const questions = submission.allQuestions || [];
+  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
+  const questions = correctionView.entries;
+  const resolvedSubjectName = correctionView.subjectName;
+  const subjectBreakdown = resolvedSubjectName
+    ? computeSubmissionSubjectBreakdown(quiz, submission).find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName))
+    : null;
+  const negativeValue = parseFloat(quiz?.negativeMarkValue || 0) || 0;
   const lineHeight = 5;
   let y = margin;
 
@@ -4379,14 +4425,20 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   y = 34;
 
   addText(quiz.title || submission.quizId || 'Quiz', margin, usableWidth, { size: 15, style: 'bold', after: 3 });
+  if (resolvedSubjectName) addText(`Subject: ${resolvedSubjectName}`, margin, usableWidth, { size: 10, color: [71, 85, 105], after: 2 });
   const metaY = y;
   addMeta('STUDENT', submission.name || '', margin, 82);
   addMeta('EMAIL / ID', submission.email || submission.registrationNo || '', margin + 92, 82);
   y = metaY + 16;
-  const scoreText = `${formatScoreValue(submission.score || 0)}/${questions.length} (${submission.percent || 0}%)${hasManualScoreOverride(submission) ? ' - Teacher adjusted' : ''}`;
+  const correctionScore = subjectBreakdown ? subjectBreakdown.score : (submission.score || 0);
+  const correctionPercent = subjectBreakdown ? subjectBreakdown.percent : (submission.percent || 0);
+  const correctionNegativePenalty = subjectBreakdown
+    ? Math.max(0, Math.round(((subjectBreakdown.wrong || 0) * negativeValue) * 100) / 100)
+    : (submission.negativePenalty || 0);
+  const scoreText = `${formatScoreValue(correctionScore)}/${questions.length} (${correctionPercent || 0}%)${!subjectBreakdown && hasManualScoreOverride(submission) ? ' - Teacher adjusted' : ''}`;
   addMeta('SCORE', scoreText, margin, 52);
   addMeta('QUIZ ID', submission.quizId || quiz.id || '', margin + 62, 52);
-  if (opts.showNegativePenalty) addMeta('NEGATIVE PENALTY', submission.negativePenalty || 0, margin + 124, 52);
+  if (opts.showNegativePenalty) addMeta('NEGATIVE PENALTY', correctionNegativePenalty, margin + 124, 52);
   y += 18;
 
   pdf.setDrawColor(203, 213, 225);
@@ -4396,23 +4448,27 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   if (!questions.length) {
     addText('No questions recorded for this submission.', margin, usableWidth);
   } else {
-    questions.forEach((question, idx) => {
-      const chosen = submission.answers && submission.answers[idx] ? submission.answers[idx] : '';
+    questions.forEach((entry, idx) => {
+      const question = entry.question || {};
+      const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
       const correct = (question.answer || '').toString().toUpperCase();
       const isCorrect = chosen && chosen === correct;
       const questionText = `${idx + 1}. ${question.question || ''}`;
+      const subjectText = !resolvedSubjectName ? `Subject: ${entry.subject}` : '';
       const chosenText = chosen ? `${chosen}. ${optionText(question, chosen)}` : 'No answer';
       const correctText = correct ? `${correct}. ${optionText(question, correct)}` : 'Not set';
       const questionLines = pdf.splitTextToSize(questionText, usableWidth);
+      const subjectLines = subjectText ? pdf.splitTextToSize(subjectText, usableWidth - 6) : [];
       const answerLines = pdf.splitTextToSize(`Your answer: ${chosenText}`, usableWidth - 6);
       const correctLines = pdf.splitTextToSize(`Correct answer: ${correctText}`, usableWidth - 6);
-      const needed = (questionLines.length + answerLines.length + correctLines.length) * lineHeight + 19;
+      const needed = (questionLines.length + subjectLines.length + answerLines.length + correctLines.length) * lineHeight + 19;
       ensureSpace(needed);
 
       pdf.setFillColor(248, 250, 252);
       pdf.setDrawColor(226, 232, 240);
       pdf.roundedRect(margin, y - 4, usableWidth, needed - 3, 2, 2, 'FD');
       addText(questionText, margin + 4, usableWidth - 8, { size: 10, style: 'bold', after: 1 });
+      if (subjectText) addText(subjectText, margin + 4, usableWidth - 8, { size: 8, color: [71, 85, 105], after: 0 });
       addText(`Your answer: ${chosenText}`, margin + 4, usableWidth - 8, { size: 9, color: isCorrect ? [4, 120, 87] : [185, 28, 28], after: 0 });
       addText(`Correct answer: ${correctText}`, margin + 4, usableWidth - 8, { size: 9, color: [15, 23, 36], after: 1 });
       addText(isCorrect ? 'Status: Correct' : 'Status: Incorrect', margin + 4, usableWidth - 8, { size: 9, style: 'bold', color: isCorrect ? [4, 120, 87] : [185, 28, 28], after: 5 });
@@ -4428,7 +4484,11 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 7, { align: 'right' });
   }
 
-  const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId, 'correction');
+  const filename = getStudentResultPdfFilename(
+    submission,
+    quiz.id || submission.quizId,
+    resolvedSubjectName ? `correction-${resolvedSubjectName}` : 'correction'
+  );
   if (opts.returnBlob || opts.returnFile || opts.autoSave === false) {
     const blob = pdf.output('blob');
     if (opts.returnFile) {
@@ -5247,11 +5307,14 @@ function buildCertificateSignatureSvg(item, index = 0) {
   `;
 }
 
-function buildCertificateVerificationUrl(quiz, submission) {
+function buildCertificateVerificationUrl(quiz, submission, options = {}) {
   const base = window.location.href.split('?')[0];
   const params = new URLSearchParams();
   params.set('resultQuiz', submission?.quizId || quiz?.id || '');
   params.set('resultKey', submission?.submissionId || buildSubmissionIdentity(submission));
+  if (options.downloadCorrection) params.set('downloadCorrection', '1');
+  const correctionSubject = (options.correctionSubject || '').toString().trim();
+  if (correctionSubject) params.set('correctionSubject', correctionSubject);
   return `${base}?${params.toString()}`;
 }
 
@@ -6965,7 +7028,7 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
   return s;
 }
 
-async function showStudentResultModalBySubmissionKey(quizId, submissionKey, includeActions = true) {
+async function showStudentResultModalBySubmissionKey(quizId, submissionKey, includeActions = true, options = {}) {
   const id = (quizId || '').trim();
   const key = (submissionKey || '').trim();
   if (!id || !key) return showNotification('Result link is incomplete', 'error');
@@ -7009,6 +7072,27 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
   if (printBtn) printBtn.onclick = () => {
     printStudentSummary(quiz, submission);
   };
+  if (options.autoDownloadCorrection) {
+    const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: options.correctionSubject || '' });
+    setTimeout(async () => {
+      try {
+        await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true, subjectName: options.correctionSubject || '' });
+        const downloadedAt = new Date().toISOString();
+        markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+          correctionStatus: 'downloaded',
+          correctionDownloadedAt: downloadedAt,
+          _correctionDownloaded: true
+        });
+        submission.correctionStatus = 'downloaded';
+        submission.correctionDownloadedAt = downloadedAt;
+        submission._correctionDownloaded = true;
+        showNotification(correctionView.subjectName ? `${correctionView.subjectName} correction PDF downloaded` : 'Correction PDF downloaded', 'success', 6000);
+      } catch (error) {
+        console.error(error);
+        showNotification('Error preparing correction PDF', 'error');
+      }
+    }, 120);
+  }
   return submission;
 }
 
