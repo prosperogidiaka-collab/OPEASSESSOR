@@ -657,7 +657,7 @@ function buildPortableQuizSnapshot(quiz) {
     examName: quiz.examName || '',
     title: quiz.title || '',
     timeLimit: quiz.timeLimit || 0,
-    maxGrade: quiz.maxGrade || 100,
+    maxGrade: getQuizTotalMarks(quiz),
     attemptLimit: quiz.attemptLimit || 1,
     passMark: quiz.passMark || 50,
     negativeMarkEnabled: !!quiz.negativeMarkEnabled,
@@ -679,6 +679,7 @@ function buildPortableQuizSnapshot(quiz) {
     subjects: (quiz.subjects || []).map((subject) => ({
       name: subject && subject.name ? subject.name : 'General',
       questionCount: subject && subject.questionCount != null ? subject.questionCount : null,
+      totalMarks: getSubjectTotalMarks(subject),
       questions: ((subject && Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject && subject.questions) || []).map((question) => ({ ...question }))
     }))
   };
@@ -1244,9 +1245,13 @@ function normalizeQuestionForStorage(question, index = 0, subjectName = 'General
     ...question,
     question: normalizeRichText(question.question || ''),
     subject: question.subject || subjectName,
+    topic: normalizeRichText(question.topic || ''),
     options: Array.isArray(question.options) ? question.options.map((option) => normalizeRichText(option)) : [],
     answer: (question.answer || '').toString().trim().toUpperCase(),
-    difficulty: question.difficulty || 'Medium'
+    difficulty: question.difficulty || 'Medium',
+    explanation: normalizeRichText(question.explanation || ''),
+    learningPoint: normalizeRichText(question.learningPoint || ''),
+    keyConcept: normalizeRichText(question.keyConcept || question.topic || '')
   };
   normalized._sourceId = question._sourceId || question.id || makeQuestionId(normalized, index);
   return normalized;
@@ -1267,6 +1272,43 @@ function prepareQuestionForStudent(question, shuffleOptions) {
   return prepared;
 }
 
+function getQuestionCountForSubject(subject = {}) {
+  const configuredCount = Number(subject?.questionCount);
+  if (Number.isFinite(configuredCount) && configuredCount > 0) return configuredCount;
+  const bankCount = Array.isArray(subject?.bankQuestions) ? subject.bankQuestions.length : 0;
+  const questionCount = Array.isArray(subject?.questions) ? subject.questions.length : 0;
+  return Math.max(bankCount, questionCount, 0);
+}
+
+function getSubjectTotalMarks(subject = {}) {
+  const configured = Number(subject?.totalMarks ?? subject?.maxScore ?? subject?.maxGrade ?? 0);
+  if (Number.isFinite(configured) && configured > 0) return Math.round(configured * 100) / 100;
+  return getQuestionCountForSubject(subject);
+}
+
+function getQuizTotalMarks(quiz = {}, fallbackQuestions = []) {
+  const subjectTotal = Array.isArray(quiz?.subjects)
+    ? quiz.subjects.reduce((sum, subject) => sum + getSubjectTotalMarks(subject), 0)
+    : 0;
+  if (subjectTotal > 0) return Math.round(subjectTotal * 100) / 100;
+  const configured = Number(quiz?.maxGrade);
+  if (Number.isFinite(configured) && configured > 0) return Math.round(configured * 100) / 100;
+  return Array.isArray(fallbackQuestions) ? fallbackQuestions.length : 0;
+}
+
+function getQuizSubjectMetaMap(quiz = {}) {
+  const map = new Map();
+  (quiz.subjects || []).forEach((subject, index) => {
+    const name = (subject?.name || `Subject ${index + 1}`).toString().trim() || `Subject ${index + 1}`;
+    map.set(normalizeSubjectName(name), {
+      name,
+      totalMarks: getSubjectTotalMarks(subject),
+      questionCount: getQuestionCountForSubject(subject)
+    });
+  });
+  return map;
+}
+
 // Compute facility index for a quiz by aggregating stored submissions
 function computeFacilityIndex(quizId) {
   const submissions = getAllSubmissions().filter(s => s.quizId === quizId);
@@ -1280,7 +1322,18 @@ function computeFacilityIndex(quizId) {
     const source = Array.isArray(subj.bankQuestions) && subj.bankQuestions.length ? subj.bankQuestions : subj.questions;
     for (let i = 0; i < (source || []).length; i++) {
       const q = normalizeQuestionForStorage(source[i], i, subj.name || 'General');
-      quizQuestions.push({ _sourceId: q._sourceId, question: q.question || '', subject: subj.name || q.subject || 'General', options: q.options || [], answer: q.answer || null, difficulty: q.difficulty || 'Medium' });
+      quizQuestions.push({
+        _sourceId: q._sourceId,
+        question: q.question || '',
+        subject: subj.name || q.subject || 'General',
+        topic: q.topic || '',
+        explanation: q.explanation || '',
+        learningPoint: q.learningPoint || '',
+        keyConcept: q.keyConcept || q.topic || '',
+        options: q.options || [],
+        answer: q.answer || null,
+        difficulty: q.difficulty || 'Medium'
+      });
     }
   }
 
@@ -1320,6 +1373,10 @@ function computeFacilityIndex(quizId) {
       index: idx + 1,
       sourceId: qq._sourceId,
       subject: qq.subject,
+      topic: qq.topic || '',
+      explanation: qq.explanation || '',
+      learningPoint: qq.learningPoint || '',
+      keyConcept: qq.keyConcept || qq.topic || '',
       question: qq.question,
       options: qq.options,
       answer: qq.answer,
@@ -1335,6 +1392,41 @@ function computeFacilityIndex(quizId) {
   });
 
   return results;
+}
+
+function getFacilityDifficultyBand(facilityIndex) {
+  if (facilityIndex == null) return { label: 'No Attempts', shortLabel: 'No Attempts', min: 0, max: 0, color: '#F8FAFC', accent: '#CBD5E1', text: '#475569' };
+  const percent = Math.round(facilityIndex * 100);
+  if (percent >= 90) return { label: 'Very Easy', shortLabel: 'Very Easy', min: 90, max: 100, color: '#D1FAE5', accent: '#6EE7B7', text: '#111827' };
+  if (percent >= 75) return { label: 'Easy', shortLabel: 'Easy', min: 75, max: 89, color: '#E0F2FE', accent: '#7DD3FC', text: '#111827' };
+  if (percent >= 50) return { label: 'Moderate', shortLabel: 'Moderate', min: 50, max: 74, color: '#FEF9C3', accent: '#FDE68A', text: '#111827' };
+  if (percent >= 30) return { label: 'Difficult', shortLabel: 'Difficult', min: 30, max: 49, color: '#FFE4E6', accent: '#FDA4AF', text: '#111827' };
+  return { label: 'Very Difficult', shortLabel: 'Very Difficult', min: 0, max: 29, color: '#FEE2E2', accent: '#FCA5A5', text: '#111827' };
+}
+
+function getFacilityAnalysisSummary(items = []) {
+  const usable = items.filter((item) => item.facilityIndex != null);
+  const average = usable.length ? Math.round((usable.reduce((sum, item) => sum + item.facilityIndex, 0) / usable.length) * 100) : 0;
+  const counts = { veryEasy: 0, easy: 0, moderate: 0, difficult: 0, veryDifficult: 0 };
+  usable.forEach((item) => {
+    const label = getFacilityDifficultyBand(item.facilityIndex).label;
+    if (label === 'Very Easy') counts.veryEasy++;
+    else if (label === 'Easy') counts.easy++;
+    else if (label === 'Moderate') counts.moderate++;
+    else if (label === 'Difficult') counts.difficult++;
+    else if (label === 'Very Difficult') counts.veryDifficult++;
+  });
+  const total = usable.length || 1;
+  return {
+    average,
+    totalQuestions: items.length,
+    counts,
+    percentages: {
+      easy: Math.round(((counts.veryEasy + counts.easy) / total) * 100),
+      moderate: Math.round((counts.moderate / total) * 100),
+      difficult: Math.round(((counts.difficult + counts.veryDifficult) / total) * 100)
+    }
+  };
 }
 
 function getQuizQuestionsForTaking(quiz) {
@@ -2813,8 +2905,9 @@ function renderTeacherGuideView() {
       title: 'Cloud Sync and Sharing',
       description: 'Make quizzes work across devices.',
       steps: [
-        'Check the status on each quiz card. Cloud synced means the quiz is ready across devices.',
+        'Check the status on each quiz card. Cloud synced means the latest version of that quiz has already been copied to the shared server, so other devices can open the same quiz data.',
         'If the quiz says Pending cloud sync, click Sync To Cloud first.',
+        'Open on a quiz card means the test is still active and students can still enter it. Ended means the test window is closed for students.',
         'Use Copy Student Code or Copy Link after sync.',
         'If shared sync looks inactive, fix the backend first before sending the quiz code or student link.',
         'When a quiz was created on one phone before cloud sync was fixed, reopen it on that original device and save or sync it once so the shared copy is uploaded.'
@@ -3772,6 +3865,16 @@ function renderQuizTake() {
         `;
         currentSection.indices.forEach((globalIndex) => {
           document.querySelectorAll(`input[name="opt-${globalIndex}"]`).forEach((input) => {
+            input.onclick = (event) => {
+              if (sub.answers[globalIndex] === input.value) {
+                input.checked = false;
+                delete sub.answers[globalIndex];
+                saveExamDraft(sub);
+                renderQuestionPalette();
+                updateExamChrome();
+                event.preventDefault();
+              }
+            };
             input.onchange = (event) => {
               sub.currentIndex = globalIndex;
               sub.currentSubjectIndex = getSubjectSectionIndexForQuestion(subjectSections, globalIndex);
@@ -3832,7 +3935,19 @@ function renderQuizTake() {
 
         setTimeout(() => {
           updateExamChrome();
-          document.querySelectorAll(`#optionsList-${idx} input[type=\"radio\"]`).forEach(i => i.onchange = (e) => { sub.answers[idx] = e.target.value; saveExamDraft(sub); renderQuestionPalette(); updateExamChrome(); });
+          document.querySelectorAll(`#optionsList-${idx} input[type=\"radio\"]`).forEach(i => {
+            i.onclick = (event) => {
+              if (sub.answers[idx] === i.value) {
+                i.checked = false;
+                delete sub.answers[idx];
+                saveExamDraft(sub);
+                renderQuestionPalette();
+                updateExamChrome();
+                event.preventDefault();
+              }
+            };
+            i.onchange = (e) => { sub.answers[idx] = e.target.value; saveExamDraft(sub); renderQuestionPalette(); updateExamChrome(); };
+          });
           const prev = document.getElementById('prevQ'); if (prev) prev.onclick = () => { if (moveQuestion(-1)) { renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
           const next = document.getElementById('nextQ'); if (next) next.onclick = () => { if (moveQuestion(1)) { renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
           const saveBtn = document.getElementById('saveQ'); if (saveBtn) saveBtn.onclick = () => { showNotification('Saved locally', 'success'); };
@@ -4373,16 +4488,14 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 12;
+  const margin = 10;
   const usableWidth = pageWidth - margin * 2;
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
-  const questions = correctionView.entries;
+  const questions = correctionView.entries.slice();
   const resolvedSubjectName = correctionView.subjectName;
-  const subjectBreakdown = resolvedSubjectName
-    ? computeSubmissionSubjectBreakdown(quiz, submission).find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName))
-    : null;
-  const negativeValue = parseFloat(quiz?.negativeMarkValue || 0) || 0;
-  const lineHeight = 5;
+  const allBreakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const topicBreakdown = computeSubmissionTopicBreakdown(quiz, submission);
+  const lineHeight = 6;
   let y = margin;
 
   const ensureSpace = (needed = 12) => {
@@ -4391,7 +4504,7 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     y = margin;
   };
   const addText = (text, x, width, options = {}) => {
-    const size = options.size || 10;
+    const size = options.size || 12;
     const style = options.style || 'normal';
     const color = options.color || [15, 23, 36];
     pdf.setFont('helvetica', style);
@@ -4402,17 +4515,58 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     pdf.text(lines, x, y);
     y += lines.length * lineHeight + (options.after || 1);
   };
-  const addMeta = (label, value, x, width) => {
+  const addMeta = (label, value, x, width, valueSize = 12) => {
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(8);
     pdf.setTextColor(71, 85, 105);
     pdf.text(label, x, y);
     pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(10);
+    pdf.setFontSize(valueSize);
     pdf.setTextColor(15, 23, 36);
     const lines = pdf.splitTextToSize((value || '').toString(), width);
     pdf.text(lines, x, y + 5);
   };
+  const addSectionPill = (text, colors = {}) => {
+    const fill = colors.fill || [224, 242, 254];
+    const border = colors.border || [125, 211, 252];
+    ensureSpace(14);
+    pdf.setFillColor(...fill);
+    pdf.setDrawColor(...border);
+    pdf.roundedRect(margin, y - 2, usableWidth, 10, 2, 2, 'FD');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(11);
+    pdf.setTextColor(17, 24, 39);
+    pdf.text((text || '').toString(), margin + 4, y + 4);
+    y += 12;
+  };
+  const addTopicBreakdownBlock = (subjectName) => {
+    const subjectTopic = topicBreakdown.find((item) => normalizeSubjectName(item.subjectName) === normalizeSubjectName(subjectName));
+    if (!subjectTopic || !subjectTopic.topics.length) return;
+    addSectionPill(`${subjectName} Topic Breakdown`, { fill: [241, 245, 249], border: [203, 213, 225] });
+    subjectTopic.topics.forEach((topic) => {
+      addText(`${topic.name}: ${topic.passed}/${topic.total}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
+    });
+    y += 2;
+  };
+
+  const groupedQuestions = new Map();
+  questions.forEach((entry) => {
+    const subjectName = entry.subject || 'General';
+    if (!groupedQuestions.has(subjectName)) groupedQuestions.set(subjectName, []);
+    groupedQuestions.get(subjectName).push(entry);
+  });
+  groupedQuestions.forEach((entries) => {
+    entries.sort((left, right) => {
+      const leftChosen = (submission.answers && submission.answers[left.originalIndex]) ? submission.answers[left.originalIndex] : '';
+      const rightChosen = (submission.answers && submission.answers[right.originalIndex]) ? submission.answers[right.originalIndex] : '';
+      const leftCorrect = (left.question?.answer || '').toString().toUpperCase();
+      const rightCorrect = (right.question?.answer || '').toString().toUpperCase();
+      const leftWrong = leftChosen && leftChosen !== leftCorrect ? 0 : 1;
+      const rightWrong = rightChosen && rightChosen !== rightCorrect ? 0 : 1;
+      if (leftWrong !== rightWrong) return leftWrong - rightWrong;
+      return left.originalIndex - right.originalIndex;
+    });
+  });
 
   pdf.setFillColor(15, 23, 36);
   pdf.rect(0, 0, pageWidth, 24, 'F');
@@ -4424,54 +4578,82 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   pdf.text('OPE Assessor', pageWidth - margin, 14, { align: 'right' });
   y = 34;
 
-  addText(quiz.title || submission.quizId || 'Quiz', margin, usableWidth, { size: 15, style: 'bold', after: 3 });
-  if (resolvedSubjectName) addText(`Subject: ${resolvedSubjectName}`, margin, usableWidth, { size: 10, color: [71, 85, 105], after: 2 });
+  addText(quiz.title || submission.quizId || 'Quiz', margin, usableWidth, { size: 16, style: 'bold', after: 2 });
+  if (resolvedSubjectName) addText(`Subject: ${resolvedSubjectName}`, margin, usableWidth, { size: 12, color: [71, 85, 105], after: 2 });
   const metaY = y;
-  addMeta('STUDENT', submission.name || '', margin, 82);
-  addMeta('EMAIL / ID', submission.email || submission.registrationNo || '', margin + 92, 82);
+  addMeta('STUDENT', submission.name || '', margin, usableWidth * 0.42, 12);
+  addMeta('EMAIL / ID', submission.email || submission.registrationNo || '', margin + usableWidth * 0.48, usableWidth * 0.46, 12);
   y = metaY + 16;
-  const correctionScore = subjectBreakdown ? subjectBreakdown.score : (submission.score || 0);
-  const correctionPercent = subjectBreakdown ? subjectBreakdown.percent : (submission.percent || 0);
-  const correctionNegativePenalty = subjectBreakdown
-    ? Math.max(0, Math.round(((subjectBreakdown.wrong || 0) * negativeValue) * 100) / 100)
-    : (submission.negativePenalty || 0);
-  const scoreText = `${formatScoreValue(correctionScore)}/${questions.length} (${correctionPercent || 0}%)${!subjectBreakdown && hasManualScoreOverride(submission) ? ' - Teacher adjusted' : ''}`;
-  addMeta('SCORE', scoreText, margin, 52);
-  addMeta('QUIZ ID', submission.quizId || quiz.id || '', margin + 62, 52);
-  if (opts.showNegativePenalty) addMeta('NEGATIVE PENALTY', correctionNegativePenalty, margin + 124, 52);
-  y += 18;
-
-  pdf.setDrawColor(203, 213, 225);
-  pdf.line(margin, y, pageWidth - margin, y);
-  y += 8;
+  const totalDisplayMarks = resolvedSubjectName
+    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).totalMarks || questions.length)
+    : getSubmissionTotalMarks(submission, quiz);
+  const totalDisplayScore = resolvedSubjectName
+    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).score || 0)
+    : (submission.score || 0);
+  const totalDisplayPercent = resolvedSubjectName
+    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).percent || 0)
+    : (submission.percent || 0);
+  const performanceRating = getPerformanceBandLabel(totalDisplayPercent);
+  const correctCount = resolvedSubjectName
+    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).correct || 0)
+    : (submission.correctCount || 0);
+  const wrongCount = resolvedSubjectName
+    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).wrong || 0)
+    : (submission.wrongCount || 0);
+  const attemptedCount = resolvedSubjectName
+    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).attempted || 0)
+    : (submission.attemptedCount || 0);
+  const accuracyPercent = attemptedCount ? Math.round((correctCount / attemptedCount) * 100) : 0;
+  addSectionPill('Performance Summary', { fill: [224, 242, 254], border: [125, 211, 252] });
+  const summaryStartY = y;
+  addMeta('SCORE', `${formatScoreValue(totalDisplayScore)} / ${formatScoreValue(totalDisplayMarks)}`, margin, usableWidth * 0.28, 12);
+  addMeta('GRADE', `${totalDisplayPercent}%`, margin + usableWidth * 0.32, usableWidth * 0.18, 12);
+  addMeta('RATING', performanceRating, margin + usableWidth * 0.54, usableWidth * 0.24, 12);
+  addMeta('QUIZ ID', submission.quizId || quiz.id || '', margin + usableWidth * 0.80, usableWidth * 0.18, 12);
+  y = summaryStartY + 17;
+  addText(`Total Correct: ${correctCount}   |   Total Wrong: ${wrongCount}   |   Accuracy: ${accuracyPercent}%`, margin, usableWidth, { size: 11, after: 2 });
+  addText(`Strength Area: ${accuracyPercent >= 50 ? 'Improving understanding in this subject' : 'More revision needed'}   |   Weak Area: ${accuracyPercent < 70 ? 'Questions answered incorrectly appear first below' : 'Review corrections for reinforcement'}`, margin, usableWidth, { size: 11, after: 4 });
+  const relevantSubjectNames = resolvedSubjectName ? [resolvedSubjectName] : Array.from(groupedQuestions.keys());
+  relevantSubjectNames.forEach((subjectName) => addTopicBreakdownBlock(subjectName));
 
   if (!questions.length) {
-    addText('No questions recorded for this submission.', margin, usableWidth);
+    addText('No questions recorded for this submission.', margin, usableWidth, { size: 12 });
   } else {
-    questions.forEach((entry, idx) => {
-      const question = entry.question || {};
-      const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
-      const correct = (question.answer || '').toString().toUpperCase();
-      const isCorrect = chosen && chosen === correct;
-      const questionText = `${idx + 1}. ${question.question || ''}`;
-      const subjectText = !resolvedSubjectName ? `Subject: ${entry.subject}` : '';
-      const chosenText = chosen ? `${chosen}. ${optionText(question, chosen)}` : 'No answer';
-      const correctText = correct ? `${correct}. ${optionText(question, correct)}` : 'Not set';
-      const questionLines = pdf.splitTextToSize(questionText, usableWidth);
-      const subjectLines = subjectText ? pdf.splitTextToSize(subjectText, usableWidth - 6) : [];
-      const answerLines = pdf.splitTextToSize(`Your answer: ${chosenText}`, usableWidth - 6);
-      const correctLines = pdf.splitTextToSize(`Correct answer: ${correctText}`, usableWidth - 6);
-      const needed = (questionLines.length + subjectLines.length + answerLines.length + correctLines.length) * lineHeight + 19;
-      ensureSpace(needed);
-
-      pdf.setFillColor(248, 250, 252);
-      pdf.setDrawColor(226, 232, 240);
-      pdf.roundedRect(margin, y - 4, usableWidth, needed - 3, 2, 2, 'FD');
-      addText(questionText, margin + 4, usableWidth - 8, { size: 10, style: 'bold', after: 1 });
-      if (subjectText) addText(subjectText, margin + 4, usableWidth - 8, { size: 8, color: [71, 85, 105], after: 0 });
-      addText(`Your answer: ${chosenText}`, margin + 4, usableWidth - 8, { size: 9, color: isCorrect ? [4, 120, 87] : [185, 28, 28], after: 0 });
-      addText(`Correct answer: ${correctText}`, margin + 4, usableWidth - 8, { size: 9, color: [15, 23, 36], after: 1 });
-      addText(isCorrect ? 'Status: Correct' : 'Status: Incorrect', margin + 4, usableWidth - 8, { size: 9, style: 'bold', color: isCorrect ? [4, 120, 87] : [185, 28, 28], after: 5 });
+    Array.from(groupedQuestions.entries()).forEach(([subjectName, entries]) => {
+      const subjectSummary = allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(subjectName));
+      addSectionPill(subjectName, { fill: [241, 245, 249], border: [203, 213, 225] });
+      if (subjectSummary) {
+        addText(`${formatScoreValue(subjectSummary.score)} / ${formatScoreValue(subjectSummary.totalMarks)} • ${subjectSummary.percent}% • ${subjectSummary.correct} correct • ${subjectSummary.wrong} wrong`, margin, usableWidth, { size: 11, after: 3 });
+      }
+      entries.forEach((entry, idx) => {
+        const question = entry.question || {};
+        const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
+        const correct = (question.answer || '').toString().toUpperCase();
+        const isCorrect = chosen && chosen === correct;
+        const answerOptions = (question.options || []).map((option, optionIndex) => `${String.fromCharCode(65 + optionIndex)}. ${option}`).join(' | ');
+        const topic = question.topic || subjectName || 'General';
+        const keyConcept = question.keyConcept || question.topic || subjectName || 'General';
+        const learningPoint = question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.';
+        const questionLines = pdf.splitTextToSize(`${idx + 1}. ${question.question || ''}`, usableWidth - 10);
+        const optionLines = pdf.splitTextToSize(`Options: ${answerOptions}`, usableWidth - 10);
+        const explanationLines = pdf.splitTextToSize(`Explanation: ${question.explanation || 'No explanation provided yet.'}`, usableWidth - 10);
+        const learningLines = pdf.splitTextToSize(`Learning point: ${learningPoint}`, usableWidth - 10);
+        const needed = (questionLines.length + optionLines.length + explanationLines.length + learningLines.length) * lineHeight + 34;
+        ensureSpace(needed);
+        const fill = isCorrect ? [224, 242, 254] : [252, 231, 243];
+        const border = isCorrect ? [125, 211, 252] : [244, 114, 182];
+        pdf.setFillColor(...fill);
+        pdf.setDrawColor(...border);
+        pdf.roundedRect(margin, y - 3, usableWidth, needed - 4, 2, 2, 'FD');
+        addText(`${idx + 1}. ${question.question || ''}`, margin + 4, usableWidth - 8, { size: 12, style: 'bold', after: 1 });
+        addText(`Status: ${isCorrect ? 'Correct' : 'Incorrect'} • Key concept: ${keyConcept}`, margin + 4, usableWidth - 8, { size: 11, style: 'bold', color: isCorrect ? [3, 105, 161] : [190, 24, 93], after: 1 });
+        addText(`Options: ${answerOptions}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
+        addText(`Student answer: ${chosen ? `${chosen}. ${optionText(question, chosen)}` : 'No answer'}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
+        addText(`Correct answer: ${correct ? `${correct}. ${optionText(question, correct)}` : 'Not set'}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
+        addText(`Topic: ${topic}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
+        addText(`Explanation: ${question.explanation || 'No explanation provided yet.'}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
+        addText(`Learning point: ${learningPoint}`, margin + 4, usableWidth - 8, { size: 11, after: 4 });
+      });
     });
   }
 
@@ -4526,7 +4708,6 @@ async function sendCorrectionByEmail(submission, quiz) {
     return false;
   }
   try {
-    await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true });
     const subject = encodeURIComponent(`Correction for ${quiz.title || submission.quizId}`);
     const body = encodeURIComponent(buildCorrectionShareMessage(submission, quiz));
     window.location.href = `mailto:${encodeURIComponent(targetEmail)}?subject=${subject}&body=${body}`;
@@ -4534,7 +4715,7 @@ async function sendCorrectionByEmail(submission, quiz) {
       correctionStatus: 'emailed',
       correctionEmailedAt: new Date().toISOString()
     });
-    showNotification('Email draft opened. Attach the downloaded PDF and click Send.', 'warning', 9000);
+    showNotification('Email draft opened with correction links for the student.', 'success', 7000);
     return true;
   } catch (error) {
     console.error(error);
@@ -4552,14 +4733,13 @@ async function shareCorrectionViaWhatsapp(submission, quiz, options = {}) {
   }
   const message = buildCorrectionShareMessage(submission, quiz);
   try {
-    await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true });
     openWhatsappChat(phone, message);
     markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
       correctionStatus: 'whatsapp-opened',
       correctionWhatsappAt: new Date().toISOString()
     });
     if (!options.suppressSuccess) {
-      showNotification('WhatsApp opened for the student number. The correction PDF has been downloaded so you can attach it in that chat.', 'warning', 9000);
+      showNotification('WhatsApp opened with correction links for the student.', 'success', 7000);
     }
     return true;
   } catch (error) {
@@ -4646,52 +4826,113 @@ function openRequestedCorrectionsShareModal(quiz, submissions = []) {
   if (bulkBtn) bulkBtn.onclick = async () => {
     const whatsappTargets = requested.filter((submission) => !!getSubmissionCorrectionContact(submission).whatsapp);
     if (!whatsappTargets.length) return showNotification('No requested correction has a WhatsApp number yet.', 'error');
-    if (!confirmTeacherAction(`Open WhatsApp chats for ${whatsappTargets.length} requested correction(s)? Each correction PDF will be prepared one by one.`)) return;
+    if (!confirmTeacherAction(`Open WhatsApp chats for ${whatsappTargets.length} requested correction(s)?`)) return;
     for (const submission of whatsappTargets) {
       await shareCorrectionViaWhatsapp(submission, quiz, { forceLinkMode: true, suppressSuccess: true });
     }
-    showNotification('Requested WhatsApp correction chats opened. Attach the downloaded PDFs where needed and send them from WhatsApp.', 'warning', 9000);
+    showNotification('Requested WhatsApp correction chats opened with the subject correction links.', 'success', 7000);
   };
 }
 
-function downloadFacilityIndexPdfText(quiz, data) {
+function downloadFacilityIndexPdfText(quiz, data, options = {}) {
   if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF is not loaded.');
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 12;
+  const margin = 10;
   const width = pageWidth - margin * 2;
+  const subjectName = (options.subjectName || '').toString().trim() || 'General';
+  const summary = getFacilityAnalysisSummary(data);
   let y = margin;
   const addPageIfNeeded = (needed = 12) => { if (y + needed > pageHeight - margin) { pdf.addPage(); y = margin; } };
-  const write = (text, size = 10, style = 'normal', color = [15, 23, 36], after = 2) => {
+  const write = (text, size = 10, style = 'normal', color = [15, 23, 36], after = 2, x = margin, maxWidth = width) => {
     pdf.setFont('helvetica', style);
     pdf.setFontSize(size);
     pdf.setTextColor(...color);
-    const lines = pdf.splitTextToSize((text || '').toString(), width);
+    const lines = pdf.splitTextToSize((text || '').toString(), maxWidth);
     addPageIfNeeded(lines.length * 5 + after);
-    pdf.text(lines, margin, y);
+    pdf.text(lines, x, y);
     y += lines.length * 5 + after;
   };
-
-  write(`Facility Index: ${quiz.title || quiz.id}`, 16, 'bold', [15, 23, 36], 5);
-  write(`Quiz ID: ${quiz.id || ''}`, 9, 'normal', [71, 85, 105], 4);
-  if (!data.length) write('No submissions yet to analyze.', 10);
-  data.forEach((r) => {
-    const fi = r.facilityIndex === null ? 'No attempts' : `${r.facilityIndex.toFixed(3)} (${Math.round(r.facilityIndex * 100)}%)`;
-    const interp = r.facilityIndex === null ? 'No attempts' : (r.facilityIndex <= 0.3 ? 'Very difficult' : r.facilityIndex <= 0.5 ? 'Difficult' : r.facilityIndex <= 0.7 ? 'Moderate' : 'Easy');
-    addPageIfNeeded(34);
-    pdf.setDrawColor(226, 232, 240);
+  const drawSummaryCard = (label, value, x, cardWidth) => {
     pdf.setFillColor(248, 250, 252);
-    pdf.roundedRect(margin, y - 4, width, 28, 2, 2, 'FD');
-    write(`Q${r.index} - ${r.subject || 'General'} - Facility: ${fi} - ${interp}`, 10, 'bold', [15, 23, 36], 1);
-    write(r.question || '', 9, 'normal', [15, 23, 36], 1);
-    write(`Seen: ${r.seen}, Attempted: ${r.attempted}, Correct: ${r.correct}, Unanswered: ${r.unanswered}, Not seen: ${r.notSeen}`, 8, 'normal', [71, 85, 105], 3);
-    (r.optionCounts || []).forEach((item) => {
-      const correct = (r.answer || '').toString().toUpperCase() === item.letter ? ' (Correct)' : '';
-      write(`${item.letter}. ${item.option}${correct}: ${item.count} student(s)`, 8, correct ? 'bold' : 'normal', correct ? [4, 120, 87] : [71, 85, 105], 1);
+    pdf.setDrawColor(191, 219, 254);
+    pdf.roundedRect(x, y, cardWidth, 18, 2, 2, 'FD');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9);
+    pdf.setTextColor(71, 85, 105);
+    pdf.text(label, x + 4, y + 6);
+    pdf.setFontSize(15);
+    pdf.setTextColor(15, 23, 36);
+    pdf.text(String(value), x + 4, y + 14);
+  };
+
+  pdf.setFillColor(47, 128, 237);
+  pdf.rect(0, 0, pageWidth, 22, 'F');
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(16);
+  pdf.text((quiz.examName || 'UPSS').toString(), margin, 13);
+  pdf.setFontSize(10);
+  pdf.text('FACILITY INDEX ANALYSIS REPORT', pageWidth - margin, 13, { align: 'right' });
+  y = 30;
+  write(subjectName, 16, 'bold', [15, 23, 36], 2);
+  write(`Quiz ID: ${quiz.id || ''} • Date: ${new Date().toLocaleDateString()}`, 9, 'normal', [71, 85, 105], 6);
+  const gap = 4;
+  const cardWidth = (width - gap * 2) / 3;
+  drawSummaryCard('Average Facility Index', `${summary.average}%`, margin, cardWidth);
+  drawSummaryCard('Total Questions', summary.totalQuestions, margin + cardWidth + gap, cardWidth);
+  drawSummaryCard('Easy / Moderate / Difficult', `${summary.percentages.easy}% / ${summary.percentages.moderate}% / ${summary.percentages.difficult}%`, margin + (cardWidth + gap) * 2, cardWidth);
+  y += 24;
+  pdf.setFillColor(226, 232, 240);
+  pdf.roundedRect(margin, y, width, 6, 2, 2, 'F');
+  const totalPercent = Math.max(1, summary.percentages.easy + summary.percentages.moderate + summary.percentages.difficult);
+  const difficultWidth = width * (summary.percentages.difficult / totalPercent);
+  const moderateWidth = width * (summary.percentages.moderate / totalPercent);
+  const easyWidth = width * (summary.percentages.easy / totalPercent);
+  pdf.setFillColor(252, 165, 165);
+  pdf.roundedRect(margin, y, difficultWidth, 6, 2, 2, 'F');
+  pdf.setFillColor(253, 230, 138);
+  pdf.rect(margin + difficultWidth, y, moderateWidth, 6, 'F');
+  pdf.setFillColor(125, 211, 252);
+  pdf.roundedRect(margin + difficultWidth + moderateWidth, y, easyWidth, 6, 2, 2, 'F');
+  y += 12;
+  if (!data.length) write('No submissions yet to analyze.', 11);
+  const orderedBands = ['Very Difficult', 'Difficult', 'Moderate', 'Easy', 'Very Easy'];
+  orderedBands.forEach((label) => {
+    const items = data.filter((item) => getFacilityDifficultyBand(item.facilityIndex).label === label)
+      .sort((left, right) => (left.facilityIndex ?? 1) - (right.facilityIndex ?? 1));
+    if (!items.length) return;
+    const band = getFacilityDifficultyBand(items[0].facilityIndex);
+    addPageIfNeeded(20);
+    pdf.setFillColor(...hexToRgbTriplet(band.color));
+    pdf.setDrawColor(...hexToRgbTriplet(band.accent));
+    pdf.roundedRect(margin, y, width, 10, 2, 2, 'FD');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(11);
+    pdf.setTextColor(17, 24, 39);
+    pdf.text(`${label} (${band.min}-${band.max}%)`, margin + 4, y + 6.5);
+    y += 14;
+    items.forEach((item) => {
+      const optionLines = (item.optionCounts || []).map((option) => `${option.letter}: ${option.count}`).join('   ');
+      const correctAnswer = (item.answer || '').toString().toUpperCase();
+      const questionLines = pdf.splitTextToSize((item.question || '').toString(), width - 10);
+      const explanationLines = pdf.splitTextToSize(`Explanation: ${item.explanation || 'No explanation provided yet.'}`, width - 10);
+      const optionWrap = pdf.splitTextToSize(`Option counts: ${optionLines}`, width - 10);
+      const needed = (questionLines.length * 7) + (explanationLines.length * 6) + (optionWrap.length * 6) + 34;
+      addPageIfNeeded(needed);
+      pdf.setFillColor(255, 255, 255);
+      pdf.setDrawColor(226, 232, 240);
+      pdf.roundedRect(margin, y, width, needed - 4, 2, 2, 'FD');
+      write(`Question ${item.index} • ${Math.round((item.facilityIndex || 0) * 100)}% • ${label}`, 10, 'bold', [15, 23, 36], 2, margin + 4, width - 8);
+      write(item.question || '', 12, 'normal', [15, 23, 36], 2, margin + 4, width - 8);
+      write(`Correct answer: ${correctAnswer || 'Not set'}`, 10, 'bold', [15, 23, 36], 1, margin + 4, width - 8);
+      write(`Seen: ${item.seen} • Attempted: ${item.attempted} • Correct: ${item.correct} • Wrong: ${Math.max(0, item.attempted - item.correct)}`, 9, 'normal', [71, 85, 105], 1, margin + 4, width - 8);
+      write(`Topic: ${item.topic || 'Not set'}`, 9, 'normal', [71, 85, 105], 1, margin + 4, width - 8);
+      write(`Option counts: ${optionLines}`, 9, 'normal', [15, 23, 36], 1, margin + 4, width - 8);
+      write(`Explanation: ${item.explanation || 'No explanation provided yet.'}`, 9, 'normal', [15, 23, 36], 4, margin + 4, width - 8);
     });
-    y += 3;
   });
   const pageCount = pdf.internal.getNumberOfPages();
   for (let page = 1; page <= pageCount; page++) {
@@ -4700,7 +4941,7 @@ function downloadFacilityIndexPdfText(quiz, data) {
     pdf.setTextColor(100, 116, 139);
     pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 7, { align: 'right' });
   }
-  pdf.save(`facility-index-${quiz.id}.pdf`);
+  pdf.save(`${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`);
   return Promise.resolve(true);
 }
 
@@ -4775,6 +5016,34 @@ function getTeacherSummaryIcon(kind) {
   return icons[kind] || icons.chart;
 }
 
+function getSubmissionSubjectBreakdownForDisplay(quiz, submission) {
+  if (Array.isArray(submission?.subjectBreakdown) && submission.subjectBreakdown.length) return submission.subjectBreakdown;
+  return computeSubmissionSubjectBreakdown(quiz, submission || {});
+}
+
+function getTeacherSummarySubjectColumns(quiz, submissions = []) {
+  const seen = new Map();
+  (quiz?.subjects || []).forEach((subject, index) => {
+    const name = (subject?.name || `Subject ${index + 1}`).toString().trim() || `Subject ${index + 1}`;
+    seen.set(normalizeSubjectName(name), name);
+  });
+  (submissions || []).forEach((submission) => {
+    getSubmissionSubjectBreakdownForDisplay(quiz, submission).forEach((item) => {
+      const key = normalizeSubjectName(item.name);
+      if (!seen.has(key)) seen.set(key, item.name);
+    });
+  });
+  return Array.from(seen.values());
+}
+
+function buildSubmissionSubjectScoreLines(quiz, submission, options = {}) {
+  const joiner = options.joiner || '<br />';
+  const fallback = options.fallback || 'No subject score';
+  const breakdown = getSubmissionSubjectBreakdownForDisplay(quiz, submission);
+  if (!breakdown.length) return fallback;
+  return breakdown.map((item) => `${escapeHtml(item.name)}: ${formatScoreValue(item.score)} / ${formatScoreValue(item.totalMarks || item.total)}`).join(joiner);
+}
+
 function computeTeacherSummaryRanks(submissions = []) {
   const ordered = (submissions || []).slice().sort((a, b) =>
     (b.percent || 0) - (a.percent || 0) ||
@@ -4788,13 +5057,17 @@ function computeTeacherSummaryRanks(submissions = []) {
   return ranks;
 }
 
-function buildTeacherSummaryPdfHtml(quiz, submissions) {
+function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
   const ranks = computeTeacherSummaryRanks(submissions);
   const questionCount = getTeacherSummaryQuestionCount(quiz, submissions);
+  const totalMarks = getQuizTotalMarks(quiz);
   const avgScore = submissions.length ? Math.round(submissions.reduce((a, s) => a + (s.score || 0), 0) / submissions.length) : 0;
   const avgPercent = submissions.length ? Math.round(submissions.reduce((a, s) => a + (s.percent || 0), 0) / submissions.length) : 0;
   const institutionName = escapeHtml(((quiz && quiz.examName) || '').toString().trim());
   const quizTitle = escapeHtml(((quiz && quiz.title) || 'ENGLISH TEST').toString().trim().toUpperCase());
+  const subjectColumns = getTeacherSummarySubjectColumns(quiz, submissions);
+  const hasMultiSubject = subjectColumns.length > 1;
+  const displayFormat = !hasMultiSubject ? 'single' : (options.format === 'separate' ? 'separate' : options.format === 'grouped' ? 'grouped' : 'grouped');
   const rowThemes = [
     { bg: '#e8f8f2', edge: '#d6efe6' },
     { bg: '#fff0e6', edge: '#ffe0d1' },
@@ -4813,7 +5086,57 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
     const status = getTeacherSummaryStatus(s, quiz);
     const rankTheme = getTeacherSummaryRankTheme(ranks[normalizeEmail(s.email)] || '');
     const emailOrId = (s.email || s.registrationNo || '').toString().trim();
-    const scoreBase = Array.isArray(s.allQuestions) && s.allQuestions.length ? s.allQuestions.length : questionCount;
+    const scoreBase = getSubmissionTotalMarks(s, quiz) || totalMarks || questionCount;
+    const subjectBreakdown = getSubmissionSubjectBreakdownForDisplay(quiz, s);
+    const averageSubjectPercent = getSubmissionAveragePercent(s, quiz);
+    if (displayFormat === 'grouped') {
+      return `
+        <tr>
+          <td class="summary-cell summary-cell-rank" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <span class="summary-rank-badge" style="background:${rankTheme.bg};color:${rankTheme.color};border-color:${rankTheme.border}">${escapeHtml(rankTheme.label)}</span>
+          </td>
+          <td class="summary-cell summary-cell-name" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <div class="summary-name">${escapeHtml(s.name || '') || 'Unnamed Student'}</div>
+          </td>
+          <td class="summary-cell summary-cell-subjects" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <div class="summary-subject-lines">${buildSubmissionSubjectScoreLines(quiz, s)}</div>
+          </td>
+          <td class="summary-cell summary-cell-score" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <span class="summary-score">${formatScoreValue(s.score || 0)}/${formatScoreValue(scoreBase || 0)}</span>
+          </td>
+          <td class="summary-cell summary-cell-percent" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <span class="summary-percent">${averageSubjectPercent}%</span>
+          </td>
+        </tr>
+      `;
+    }
+    if (displayFormat === 'separate') {
+      const subjectCells = subjectColumns.map((subjectName) => {
+        const subjectEntry = subjectBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(subjectName));
+        return `
+          <td class="summary-cell summary-cell-subject-score" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <span class="summary-score">${subjectEntry ? formatScoreValue(subjectEntry.score) : '-'}</span>
+          </td>
+        `;
+      }).join('');
+      return `
+        <tr>
+          <td class="summary-cell summary-cell-rank" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <span class="summary-rank-badge" style="background:${rankTheme.bg};color:${rankTheme.color};border-color:${rankTheme.border}">${escapeHtml(rankTheme.label)}</span>
+          </td>
+          <td class="summary-cell summary-cell-name" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <div class="summary-name">${escapeHtml(s.name || '') || 'Unnamed Student'}</div>
+          </td>
+          ${subjectCells}
+          <td class="summary-cell summary-cell-score" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <span class="summary-score">${formatScoreValue(s.score || 0)}/${formatScoreValue(scoreBase || 0)}</span>
+          </td>
+          <td class="summary-cell summary-cell-percent" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
+            <span class="summary-percent">${averageSubjectPercent}%</span>
+          </td>
+        </tr>
+      `;
+    }
     return `
       <tr>
         <td class="summary-cell summary-cell-rank" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
@@ -4826,7 +5149,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
           <div class="summary-email">${escapeHtml(emailOrId)}</div>
         </td>
         <td class="summary-cell summary-cell-score" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
-          <span class="summary-score">${formatScoreValue(s.score || 0)}/${scoreBase || 0}</span>
+          <span class="summary-score">${formatScoreValue(s.score || 0)}/${formatScoreValue(scoreBase || 0)}</span>
         </td>
         <td class="summary-cell summary-cell-percent" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
           <span class="summary-percent">${clampPercent(s.percent || 0)}%</span>
@@ -4837,9 +5160,44 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
       </tr>
     `;
   }).join('');
+  const tableColgroup = displayFormat === 'grouped'
+    ? '<colgroup><col><col><col><col><col></colgroup>'
+    : displayFormat === 'separate'
+      ? `<colgroup><col><col>${subjectColumns.map(() => '<col>').join('')}<col><col></colgroup>`
+      : '<colgroup><col><col><col><col><col><col></colgroup>';
+  const tableHead = displayFormat === 'grouped'
+    ? `
+      <tr>
+        <th class="th-center">Position</th>
+        <th>Name</th>
+        <th>Subjects &amp; Scores</th>
+        <th class="th-right">Total / ${formatScoreValue(totalMarks || questionCount || 0)}</th>
+        <th class="th-right">Average</th>
+      </tr>
+    `
+    : displayFormat === 'separate'
+      ? `
+        <tr>
+          <th class="th-center">Position</th>
+          <th>Name</th>
+          ${subjectColumns.map((subjectName) => `<th class="th-right">${escapeHtml(subjectName)}</th>`).join('')}
+          <th class="th-right">Total / ${formatScoreValue(totalMarks || questionCount || 0)}</th>
+          <th class="th-right">Average</th>
+        </tr>
+      `
+      : `
+        <tr>
+          <th class="th-center">Rank</th>
+          <th>Name</th>
+          <th>Email / ID</th>
+          <th class="th-right">Score</th>
+          <th class="th-right">Percent</th>
+          <th class="th-center">Status</th>
+        </tr>
+      `;
 
   return `
-    <div class="summary-pdf-root">
+    <div class="summary-pdf-root ${displayFormat === 'separate' ? 'summary-pdf-separate' : displayFormat === 'grouped' ? 'summary-pdf-grouped' : ''}">
       <style>
         .summary-pdf-root{
           --navy:#1f2a44;
@@ -4998,12 +5356,17 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
           border-spacing:0 10px;
           table-layout:fixed;
         }
-        .summary-table col:nth-child(1){width:11%}
-        .summary-table col:nth-child(2){width:24%}
-        .summary-table col:nth-child(3){width:27%}
-        .summary-table col:nth-child(4){width:14%}
-        .summary-table col:nth-child(5){width:10%}
-        .summary-table col:nth-child(6){width:14%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(1){width:11%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(2){width:24%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(3){width:27%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(4){width:14%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(5){width:10%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(6){width:14%}
+        .summary-pdf-grouped .summary-table col:nth-child(1){width:12%}
+        .summary-pdf-grouped .summary-table col:nth-child(2){width:24%}
+        .summary-pdf-grouped .summary-table col:nth-child(3){width:34%}
+        .summary-pdf-grouped .summary-table col:nth-child(4){width:16%}
+        .summary-pdf-grouped .summary-table col:nth-child(5){width:14%}
         .summary-table th{
           padding:0 14px 6px;
           text-align:left;
@@ -5057,6 +5420,22 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
           color:var(--navy);
           white-space:nowrap;
         }
+        .summary-subject-lines{
+          font-size:12px;
+          line-height:1.55;
+          color:#334155;
+          white-space:normal;
+        }
+        .summary-cell-subject-score{text-align:right}
+        .summary-pdf-separate .summary-table{
+          table-layout:auto;
+        }
+        .summary-pdf-separate .summary-table th,
+        .summary-pdf-separate .summary-cell{
+          padding-left:10px;
+          padding-right:10px;
+          font-size:11.5px;
+        }
         .summary-status-badge,
         .summary-rank-badge{
           display:inline-flex;
@@ -5108,7 +5487,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
             <div class="summary-stat-icon">${getTeacherSummaryIcon('chart')}</div>
             <div>
               <p class="summary-stat-label">Average Score</p>
-              <p class="summary-stat-value">${avgScore} / ${questionCount || 0}</p>
+              <p class="summary-stat-value">${avgScore} / ${formatScoreValue(totalMarks || questionCount || 0)}</p>
             </div>
           </div>
           <div class="summary-stat-card card-lavender">
@@ -5123,30 +5502,68 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
         <div class="summary-table-card">
           <div class="summary-table-head">
             <h2 class="summary-table-title">Result Broadsheet</h2>
-            <div class="summary-table-note">A4 portrait layout with automatic page flow for clean printing.</div>
+            <div class="summary-table-note">${displayFormat === 'separate' && subjectColumns.length > 4 ? 'A4 landscape layout used automatically because the subject columns are many.' : 'A4 portrait layout with automatic page flow for clean printing.'}</div>
           </div>
           <table class="summary-table">
-            <colgroup>
-              <col><col><col><col><col><col>
-            </colgroup>
+            ${tableColgroup}
             <thead>
-              <tr>
-                <th class="th-center">Rank</th>
-                <th>Name</th>
-                <th>Email / ID</th>
-                <th class="th-right">Score</th>
-                <th class="th-right">Percent</th>
-                <th class="th-center">Status</th>
-              </tr>
+              ${tableHead}
             </thead>
             <tbody>
-              ${rows || '<tr><td colspan="6"><div class="summary-empty">No submissions yet.</div></td></tr>'}
+              ${rows || `<tr><td colspan="${displayFormat === 'grouped' ? 5 : displayFormat === 'separate' ? 4 + subjectColumns.length : 6}"><div class="summary-empty">No submissions yet.</div></td></tr>`}
             </tbody>
           </table>
         </div>
       </div>
     </div>
   `;
+}
+
+function showTeacherSummaryPdfFormatModal(quiz, submissions) {
+  let modal = document.getElementById('teacherSummaryPdfFormatModal');
+  if (modal) modal.remove();
+  const subjectColumns = getTeacherSummarySubjectColumns(quiz, submissions);
+  modal = document.createElement('div');
+  modal.id = 'teacherSummaryPdfFormatModal';
+  modal.className = 'student-result-modal';
+  modal.innerHTML = `
+    <div class="card-beautiful admin-modal-card" style="width:min(620px,94vw)">
+      <div class="page-heading">
+        <div>
+          <div class="h2">Choose Result Summary Format</div>
+          <div class="small">${escapeHtml(quiz.title || quiz.id || 'Quiz')} • ${subjectColumns.length} subjects</div>
+        </div>
+        <button id="closeTeacherSummaryPdfFormatModal" class="btn btn-ghost">Close</button>
+      </div>
+      <div class="small" style="line-height:1.7;margin-bottom:16px">Choose how you want subject scores arranged in the broadsheet PDF. Single-subject quizzes still use the normal summary automatically.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">
+        <button id="summaryPdfGrouped" class="btn btn-secondary" style="min-height:96px;text-align:left;justify-content:flex-start">Grouped Subjects &amp; Scores</button>
+        <button id="summaryPdfSeparate" class="btn btn-primary" style="min-height:96px;text-align:left;justify-content:flex-start">Separate Subject Columns</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  document.getElementById('closeTeacherSummaryPdfFormatModal').onclick = () => modal.remove();
+  document.getElementById('summaryPdfGrouped').onclick = () => {
+    modal.remove();
+    downloadPdfFromHtml(
+      buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'grouped' }),
+      `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) GROUPED.pdf`,
+      'Teacher result summary PDF downloaded',
+      { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
+    );
+  };
+  document.getElementById('summaryPdfSeparate').onclick = () => {
+    modal.remove();
+    const useLandscape = subjectColumns.length > 4;
+    downloadPdfFromHtml(
+      buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'separate' }),
+      `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) SEPARATE.pdf`,
+      'Teacher result summary PDF downloaded',
+      { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794 }
+    );
+  };
 }
 
 function getScoreTone(percent) {
@@ -5204,15 +5621,19 @@ function buildSubmissionGradeState(submission, quiz, baseGrade = gradeSubmission
       manualOverride: false
     };
   }
-  const totalQuestions = (submission.allQuestions || []).length;
-  const maxScore = totalQuestions > 0 ? totalQuestions : 0;
+  const maxScore = getQuizTotalMarks(quiz, submission.allQuestions || []);
   const roundedScore = Math.round(Number(submission.manualScoreOverride) * 100) / 100;
   const score = Math.max(0, Math.min(maxScore, roundedScore));
-  const percent = totalQuestions ? clampPercent((score / totalQuestions) * 100) : 0;
+  const percent = maxScore ? clampPercent((score / maxScore) * 100) : 0;
+  const averagePercent = baseGrade.subjectBreakdown && baseGrade.subjectBreakdown.length
+    ? Math.round(baseGrade.subjectBreakdown.reduce((sum, item) => sum + (item.percent || 0), 0) / baseGrade.subjectBreakdown.length)
+    : percent;
   return {
     ...baseGrade,
     score,
     percent,
+    totalMarks: maxScore,
+    averagePercent,
     passMark,
     resultStatus: percent >= passMark ? 'Pass' : 'Fail',
     manualOverride: true
@@ -5222,10 +5643,13 @@ function buildSubmissionGradeState(submission, quiz, baseGrade = gradeSubmission
 function applyGradeToSubmission(submission, grade) {
   submission.score = grade.score;
   submission.percent = grade.percent;
+  submission.totalMarks = grade.totalMarks;
+  submission.averagePercent = grade.averagePercent;
   submission.correctCount = grade.correctCount;
   submission.wrongCount = grade.wrongCount;
   submission.attemptedCount = grade.attemptedCount;
   submission.negativePenalty = grade.negativePenalty;
+  submission.subjectBreakdown = Array.isArray(grade.subjectBreakdown) ? grade.subjectBreakdown.map((item) => ({ ...item })) : [];
   submission.passMark = grade.passMark;
   submission.resultStatus = grade.resultStatus;
 }
@@ -5338,8 +5762,6 @@ function renderCertificateVerificationMarkup(quiz, submission) {
     <div class="cert-verification">
       <div class="cert-verification-copy">
         <div class="cert-verification-label">Certificate Authentication</div>
-        <div class="cert-verification-text">Scan the QR code or open this result link to verify this certificate directly inside OPE Assessor.</div>
-        <a class="cert-verification-link" href="${escapeHtml(url)}">${escapeHtml(url)}</a>
       </div>
       <div class="cert-verification-qr" aria-label="Certificate verification QR code">
         ${qrSvg || '<div class="cert-verification-fallback">QR unavailable</div>'}
@@ -5369,18 +5791,65 @@ function renderCertificateSignatories(signatories = []) {
   `;
 }
 
+function getSubmissionTotalMarks(submission, quiz) {
+  if (Number.isFinite(Number(submission?.totalMarks)) && Number(submission.totalMarks) > 0) {
+    return Math.round(Number(submission.totalMarks) * 100) / 100;
+  }
+  const breakdown = Array.isArray(submission?.subjectBreakdown) && submission.subjectBreakdown.length
+    ? submission.subjectBreakdown
+    : computeSubmissionSubjectBreakdown(quiz, submission || {});
+  const total = breakdown.reduce((sum, item) => sum + (item.totalMarks || 0), 0);
+  return total > 0 ? Math.round(total * 100) / 100 : getQuizTotalMarks(quiz, submission?.allQuestions || []);
+}
+
+function getSubmissionAveragePercent(submission, quiz) {
+  if (Number.isFinite(Number(submission?.averagePercent))) return Math.round(Number(submission.averagePercent));
+  const breakdown = Array.isArray(submission?.subjectBreakdown) && submission.subjectBreakdown.length
+    ? submission.subjectBreakdown
+    : computeSubmissionSubjectBreakdown(quiz, submission || {});
+  if (!breakdown.length) return clampPercent(submission?.percent || 0);
+  return Math.round(breakdown.reduce((sum, item) => sum + (item.percent || 0), 0) / breakdown.length);
+}
+
+function buildStudentTopicBreakdownHtml(quiz, submission) {
+  if (!quiz?.showTopicsAfterSubmission) return '';
+  const breakdown = computeSubmissionTopicBreakdown(quiz, submission);
+  if (!breakdown.length) return '';
+  return `
+    <div class="student-topic-card">
+      <h4>Topic Breakdown</h4>
+      <div class="student-topic-breakdown-list">
+        ${breakdown.map((subject) => `
+          <div class="student-topic-subject-block">
+            <strong class="student-topic-subject-name">${escapeHtml(subject.subjectName)}</strong>
+            <div class="student-topic-breakdown-table">
+              <div class="student-topic-breakdown-head">Topic Name</div>
+              <div class="student-topic-breakdown-head">Total Questions</div>
+              <div class="student-topic-breakdown-head">Passed / Total</div>
+              ${subject.topics.map((topic) => `
+                <div>${escapeHtml(topic.name)}</div>
+                <div>${topic.total}</div>
+                <div>${topic.passed}/${topic.total}</div>
+              `).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function buildStudentResultSupplementHtml(quiz, submission) {
   const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
   const shouldShowBreakdown = breakdown.length > 1 || (!!quiz && !!quiz.showTopicsAfterSubmission);
-  if (!shouldShowBreakdown || !breakdown.length) return '';
-  const averagePercent = breakdown.length
-    ? Math.round(breakdown.reduce((sum, item) => sum + (item.percent || 0), 0) / breakdown.length)
-    : 0;
-  const totalQuestions = (submission.allQuestions || []).length;
-  return `
+  const topicBreakdownHtml = buildStudentTopicBreakdownHtml(quiz, submission);
+  if ((!shouldShowBreakdown || !breakdown.length) && !topicBreakdownHtml) return '';
+  const averagePercent = getSubmissionAveragePercent(submission, quiz);
+  const totalMarks = getSubmissionTotalMarks(submission, quiz);
+  const subjectHtml = shouldShowBreakdown && breakdown.length ? `
     <div class="student-topic-card">
       <h4>${breakdown.length > 1 ? 'Performance by Subject' : 'Performance Summary'}</h4>
-      ${breakdown.length > 1 ? `<div class="small" style="margin:0 0 12px;color:#475569">Cumulative total: ${formatScoreValue(submission.score || 0)} / ${totalQuestions} • Average across ${breakdown.length} subjects: ${averagePercent}%</div>` : ''}
+      ${breakdown.length > 1 ? `<div class="small" style="margin:0 0 12px;color:#475569">Cumulative total: ${formatScoreValue(submission.score || 0)} / ${formatScoreValue(totalMarks)} • Average across ${breakdown.length} subjects: ${averagePercent}%</div>` : ''}
       <div class="student-topic-grid">
         ${breakdown.map((item) => {
           const attempted = item.attempted || 0;
@@ -5390,14 +5859,15 @@ function buildStudentResultSupplementHtml(quiz, submission) {
           return `
             <div class="student-topic-item">
               <strong>${escapeHtml(item.name)}</strong>
-              <span>${formatScoreValue(item.score)} / ${total} • ${percent}%</span>
+              <span>${formatScoreValue(item.score)} / ${formatScoreValue(item.totalMarks || total)} • ${percent}%</span>
               <small>${correct} correct • ${attempted} attempted • ${total} total${item.wrong ? ` • ${item.wrong} wrong` : ''}</small>
             </div>
           `;
         }).join('')}
       </div>
     </div>
-  `;
+  ` : '';
+  return `${subjectHtml}${topicBreakdownHtml}`;
 }
 
 function buildStudentResultFullHtml(quiz, submission, rankValue, opts = {}) {
@@ -5420,10 +5890,11 @@ function buildCorrectionRequestStatusHtml(submission = {}) {
 function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {}) {
   const includeActions = !!opts.includeActions;
   const totalQuestions = (submission.allQuestions || []).length;
+  const totalMarks = getSubmissionTotalMarks(submission, quiz);
   const attemptedCount = submission.attemptedCount || Object.keys(submission.answers || {}).filter(key => !!submission.answers[key]).length;
   const submittedText = submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'N/A';
   const correctionRequested = !!submission.correctionRequested;
-  const scoreText = `${formatScoreValue(submission.score || 0)} / ${totalQuestions}`;
+  const scoreText = `${formatScoreValue(submission.score || 0)} / ${formatScoreValue(totalMarks)}`;
   const quizName = escapeHtml(quiz.title || submission.quizId || 'Quiz');
   const institutionName = escapeHtml(quiz.examName || quiz.institution || quiz.title || 'OPE Assessor');
   const studentName = escapeHtml((submission.name || '').toUpperCase() || 'STUDENT');
@@ -5463,9 +5934,9 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
               <div class="cert-score-label">SCORE</div>
               <div class="cert-score-main">${escapeHtml(scoreText)}</div>
               <div class="cert-score-percent">${percent}%</div>
-              <div class="cert-score-helper">${escapeHtml(displayedStatus)}</div>
             </div>
           </div>
+          <div class="cert-status-badge ${displayedStatus === 'Pass' ? 'cert-status-pass' : 'cert-status-fail'}">${escapeHtml(displayedStatus)}</div>
           <div class="cert-performance">${performanceLabel}</div>
           ${hasAdjustedScore ? `<div class="cert-adjusted-note">${escapeHtml(adjustedNote)}</div>` : ''}
         </div>
@@ -5481,6 +5952,7 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
             <div class="cert-detail-label">Answered</div>
             <div class="cert-detail-value">
               ${submission.correctCount || 0} correct / ${attemptedCount} attempted
+              <div class="cert-detail-subline">${totalQuestions} question(s) • ${formatScoreValue(totalMarks)} total mark(s)</div>
               ${hasAdjustedScore ? '<div class="cert-detail-subline">Teacher score adjustment is active for this result.</div>' : ''}
             </div>
           </div>
@@ -5519,55 +5991,55 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
 
 function getCertificateResultCss() {
   return `
-    .cert-result{font-family:Inter,Arial,sans-serif;background:#fff;color:#101821;border-radius:10px;padding:14px;box-shadow:0 18px 45px rgba(15,23,42,.12);border:5px solid #D9B45A}
-    .cert-inner{position:relative;border:2px solid #E4BD5B;border-radius:8px;padding:28px 34px 26px;background:#fff;overflow:hidden}
+    .cert-result{font-family:Inter,Arial,sans-serif;background:#fff;color:#101821;border-radius:10px;padding:10px;box-shadow:0 18px 45px rgba(15,23,42,.12);border:4px solid #D9B45A}
+    .cert-inner{position:relative;border:2px solid #E4BD5B;border-radius:8px;padding:18px 26px 16px;background:#fff;overflow:hidden}
     .cert-inner:before{content:"";position:absolute;inset:0;background:linear-gradient(105deg,rgba(15,23,42,.025) 0 8%,transparent 8% 14%,rgba(15,23,42,.018) 14% 22%,transparent 22%);pointer-events:none}
-    .cert-top-rule{height:32px;border-radius:999px;background:#DDBB5E;margin:0 0 -12px;position:relative;z-index:2}
-    .cert-header{background:linear-gradient(135deg,#08111C 0%,#101922 58%,#1F2937 100%);color:#fff;text-align:center;border-radius:0 0 24px 24px;padding:34px 16px 30px;position:relative;margin-top:-6px}
-    .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
-    .cert-logo-badge{width:74px;height:74px;border-radius:22px;background:linear-gradient(135deg,#DDBB5E,#F6E7B6);padding:3px;box-shadow:0 12px 30px rgba(0,0,0,.2)}
-    .cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:19px;background:linear-gradient(135deg,#0F172A,#1E293B);color:#F8E8B0;font-size:26px;font-weight:900;letter-spacing:.1em}
+    .cert-top-rule{height:22px;border-radius:999px;background:#DDBB5E;margin:0 0 -8px;position:relative;z-index:2}
+    .cert-header{background:linear-gradient(135deg,#08111C 0%,#101922 58%,#1F2937 100%);color:#fff;text-align:center;border-radius:0 0 22px 22px;padding:22px 14px 18px;position:relative;margin-top:-4px}
+    .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+    .cert-logo-badge{width:62px;height:62px;border-radius:20px;background:linear-gradient(135deg,#DDBB5E,#F6E7B6);padding:3px;box-shadow:0 10px 24px rgba(0,0,0,.2)}
+    .cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:17px;background:linear-gradient(135deg,#0F172A,#1E293B);color:#F8E8B0;font-size:22px;font-weight:900;letter-spacing:.1em}
     .cert-logo-text{text-align:left}
-    .cert-logo-text strong{display:block;font-size:24px;line-height:1;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
-    .cert-logo-text span{display:block;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#DDBB5E;margin-top:6px}
-    .cert-school{font-size:32px;line-height:1.12;font-weight:900;letter-spacing:.08em;text-transform:uppercase;margin-top:6px}
-    .cert-test{font-size:19px;color:#DDBB5E;font-weight:900;letter-spacing:.05em;text-transform:uppercase;margin-top:8px}
-    .cert-title{text-align:center;font-size:36px;font-weight:900;letter-spacing:.12em;margin:38px 0 4px;color:#101821}
-    .cert-platform{text-align:center;font-size:16px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#6B7280;margin-bottom:24px}
-    .cert-student-panel{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:16px;text-align:center;padding:18px 12px;margin:0 auto 0;max-width:780px}
+    .cert-logo-text strong{display:block;font-size:21px;line-height:1;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+    .cert-logo-text span{display:block;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#DDBB5E;margin-top:5px}
+    .cert-school{font-size:27px;line-height:1.12;font-weight:900;letter-spacing:.08em;text-transform:uppercase;margin-top:4px}
+    .cert-test{font-size:17px;color:#DDBB5E;font-weight:900;letter-spacing:.05em;text-transform:uppercase;margin-top:6px}
+    .cert-title{text-align:center;font-size:30px;font-weight:900;letter-spacing:.1em;margin:20px 0 2px;color:#101821}
+    .cert-platform{text-align:center;font-size:13px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#6B7280;margin-bottom:14px}
+    .cert-student-panel{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:14px;text-align:center;padding:14px 12px;margin:0 auto;max-width:100%}
     .cert-label,.cert-detail-label{font-weight:900;color:#6B7280;text-transform:uppercase;letter-spacing:.06em}
-    .cert-student-name{font-size:40px;font-weight:900;letter-spacing:.08em;margin-top:8px;color:#101821}
-    .cert-score-wrap{display:flex;flex-direction:column;align-items:center;gap:14px;margin:10px 0 24px}
-    .cert-score-ring{--cert-progress:0;width:250px;height:250px;border-radius:999px;padding:14px;background:conic-gradient(from -90deg,#DDBB5E 0 calc(var(--cert-progress) * 1%),#F5E6B8 calc(var(--cert-progress) * 1%) 100%);box-shadow:0 18px 36px rgba(15,23,42,.08)}
-    .cert-score-ring-inner{width:100%;height:100%;border-radius:999px;background:radial-gradient(circle at top,#172436 0%,#101922 68%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px;box-sizing:border-box;color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
-    .cert-score-label{font-size:14px;font-weight:900;color:#DDBB5E;letter-spacing:.13em;margin-bottom:10px}
-    .cert-score-main{font-size:42px;font-weight:900;line-height:1.08}
-    .cert-score-percent{font-size:36px;color:#fff;font-weight:900;margin-top:10px}
-    .cert-score-helper{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#CBD5E1;margin-top:8px}
-    .cert-performance{max-width:min(360px,92%);padding:10px 18px;border-radius:999px;background:#FEF3C7;color:#92400E;font-size:14px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;text-align:center}
+    .cert-student-name{font-size:34px;font-weight:900;letter-spacing:.08em;margin-top:6px;color:#101821}
+    .cert-score-wrap{display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0 16px}
+    .cert-score-ring{--cert-progress:0;width:205px;height:205px;border-radius:999px;padding:12px;background:conic-gradient(from -90deg,#DDBB5E 0 calc(var(--cert-progress) * 1%),#F5E6B8 calc(var(--cert-progress) * 1%) 100%);box-shadow:0 14px 30px rgba(15,23,42,.08)}
+    .cert-score-ring-inner{width:100%;height:100%;border-radius:999px;background:radial-gradient(circle at top,#172436 0%,#101922 68%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px;box-sizing:border-box;color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+    .cert-score-label{font-size:13px;font-weight:900;color:#DDBB5E;letter-spacing:.13em;margin-bottom:8px}
+    .cert-score-main{font-size:34px;font-weight:900;line-height:1.08}
+    .cert-score-percent{font-size:31px;color:#fff;font-weight:900;margin-top:8px}
+    .cert-status-badge{padding:7px 16px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}
+    .cert-status-pass{background:#DCFCE7;color:#166534}
+    .cert-status-fail{background:#FEE2E2;color:#B91C1C}
+    .cert-performance{max-width:min(360px,92%);padding:8px 16px;border-radius:999px;background:#FEF3C7;color:#92400E;font-size:13px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;text-align:center}
     .cert-adjusted-note{font-size:12px;color:#B45309;background:#FFF7ED;border:1px solid #FED7AA;border-radius:999px;padding:7px 12px;text-align:center}
-    .cert-rank{width:min(360px,80%);margin:0 auto 34px;text-align:center;background:#DDBB5E;color:#101821;border-radius:999px;padding:14px;font-size:26px;font-weight:900;letter-spacing:.04em}
-    .cert-details-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin-top:8px}
-    .cert-detail-card{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:14px;padding:18px 20px;min-height:92px}
-    .cert-detail-value{font-size:17px;line-height:1.45;margin-top:12px;color:#202938;word-break:break-word}
+    .cert-rank{width:min(420px,84%);margin:0 auto 18px;text-align:center;background:#DDBB5E;color:#101821;border-radius:999px;padding:11px;font-size:22px;font-weight:900;letter-spacing:.04em}
+    .cert-details-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:8px}
+    .cert-detail-card{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:14px;padding:14px 16px;min-height:82px}
+    .cert-detail-value{font-size:15px;line-height:1.4;margin-top:10px;color:#202938;word-break:break-word}
     .cert-detail-subline{font-size:12px;color:#B45309;margin-top:8px}
-    .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px;margin:32px auto 12px;max-width:880px;text-align:center;color:#6B7280}
+    .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:18px;margin:18px auto 6px;max-width:880px;text-align:center;color:#6B7280}
     .cert-signature-card{padding-top:6px;display:flex;flex-direction:column;align-items:center}
     .cert-signature-script{width:min(220px,100%);min-height:36px;margin:0 auto -8px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
     .cert-signature-svg{display:block;width:min(196px,100%);height:42px;overflow:visible}
     .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 8px;width:min(220px,100%)}
     .cert-signatory-name{margin:0;font-size:14px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#101821}
     .cert-signatory-title{margin-top:6px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6B7280}
-    .cert-verification{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:28px 0 10px;padding:16px 18px;border:1px solid #DDE3EA;border-radius:16px;background:#F8FAFC}
+    .cert-verification{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:12px 0 8px;padding:10px 14px;border:1px solid #DDE3EA;border-radius:16px;background:#F8FAFC}
     .cert-verification-copy{flex:1;min-width:0}
     .cert-verification-label{font-size:12px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#0F172A}
-    .cert-verification-text{margin-top:8px;font-size:13px;line-height:1.55;color:#475569}
-    .cert-verification-link{display:block;margin-top:10px;font-size:12px;word-break:break-all;color:#0F766E;text-decoration:none}
     .cert-verification-qr{width:104px;min-width:104px;height:104px;border-radius:14px;background:#fff;padding:8px;border:1px solid #D1D5DB;display:flex;align-items:center;justify-content:center;overflow:hidden}
     .cert-verification-qr svg{display:block;width:100%;height:100%}
     .cert-verification-fallback{font-size:11px;font-weight:700;color:#64748B;text-align:center}
-    .cert-footer{text-align:center;font-weight:900;font-size:17px;margin-top:18px;color:#101821}
-    .cert-footer-sub{text-align:center;color:#6B7280;margin-top:8px}
+    .cert-footer{text-align:center;font-weight:900;font-size:15px;margin-top:12px;color:#101821}
+    .cert-footer-sub{text-align:center;color:#6B7280;margin-top:5px}
     .cert-result .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px}
     .student-result-full{display:flex;flex-direction:column;gap:12px}
     .student-topic-card{margin-top:0;background:#F8FAFC;padding:16px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,.05)}
@@ -5577,7 +6049,12 @@ function getCertificateResultCss() {
     .student-topic-item strong{display:block;color:#0F172A;font-size:14px;line-height:1.35}
     .student-topic-item span{display:block;margin-top:6px;color:#0F766E;font-weight:800}
     .student-topic-item small{display:block;margin-top:6px;color:#64748B;font-size:12px;line-height:1.45}
-    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:18px 12px}.cert-top-rule{height:24px}.cert-header{padding:26px 10px 22px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:58px;height:58px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:26px}.cert-platform{font-size:12px;letter-spacing:.14em}.cert-student-name{font-size:30px}.cert-score-ring{width:190px;height:190px;padding:10px}.cert-score-ring-inner{padding:20px}.cert-score-main{font-size:31px}.cert-score-percent{font-size:27px}.cert-score-helper{font-size:10px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:21px;width:90%;margin-bottom:24px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-signatures{gap:20px}.cert-signature-script{min-height:30px;margin-bottom:-6px}.cert-signature-svg{height:36px}.cert-verification{flex-direction:column;align-items:flex-start}.cert-verification-qr{align-self:flex-end}.student-topic-grid{grid-template-columns:1fr}.cert-footer{font-size:14px}}
+    .student-topic-breakdown-list{display:flex;flex-direction:column;gap:12px}
+    .student-topic-subject-block{background:#fff;border:1px solid #E2E8F0;border-radius:12px;padding:12px}
+    .student-topic-subject-name{display:block;margin-bottom:10px;color:#0F172A}
+    .student-topic-breakdown-table{display:grid;grid-template-columns:minmax(0,2fr) minmax(120px,1fr) minmax(120px,1fr);gap:8px 12px;font-size:13px;align-items:center}
+    .student-topic-breakdown-head{font-weight:800;color:#475569;text-transform:uppercase;font-size:11px;letter-spacing:.06em}
+    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:14px 10px}.cert-top-rule{height:18px}.cert-header{padding:18px 10px 16px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:56px;height:56px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:18px}.cert-platform{font-size:11px;letter-spacing:.14em}.cert-student-name{font-size:28px}.cert-score-ring{width:185px;height:185px;padding:10px}.cert-score-ring-inner{padding:18px}.cert-score-main{font-size:29px}.cert-score-percent{font-size:25px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:20px;width:92%;margin-bottom:18px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-signatures{gap:16px}.cert-signature-script{min-height:30px;margin-bottom:-6px}.cert-signature-svg{height:36px}.cert-verification{flex-direction:row;align-items:center}.student-topic-grid{grid-template-columns:1fr}.student-topic-breakdown-table{grid-template-columns:1fr}.student-topic-breakdown-head{display:none}.cert-footer{font-size:14px}}
     @media print{.cert-result{box-shadow:none;border-color:#D9B45A}.cert-result .result-actions{display:none!important}}
   `;
 }
@@ -5623,6 +6100,7 @@ function renderResultsView() {
   if (!q) return document.createElement('div');
   regradeSubmissionsForQuiz(q);
   const submissions = getAllSubmissions().filter(s => s.quizId === q.id);
+  const totalMarks = getQuizTotalMarks(q);
   const avgScore = submissions.length > 0 ? Math.round(submissions.reduce((a,s) => a + (s.score || 0), 0) / submissions.length) : 0;
   const avgPercent = submissions.length > 0 ? Math.round(submissions.reduce((a,s) => a + (s.percent || 0), 0) / submissions.length) : 0;
   const highestPercent = submissions.length ? Math.max(...submissions.map(s => s.percent || 0)) : 0;
@@ -5653,8 +6131,8 @@ function renderResultsView() {
         <div class="text-3xl font-bold text-blue-600">${submissions.length}</div>
       </div>
       <div class="card-beautiful p-6 text-center">
-        <div class="text-sm text-gray-600 mb-2">Avg Score</div>
-        <div class="text-3xl font-bold text-cyan-600">${avgScore}</div>
+        <div class="text-sm text-gray-600 mb-2">Total Marks</div>
+        <div class="text-3xl font-bold text-cyan-600">${formatScoreValue(totalMarks)}</div>
       </div>
       <div class="card-beautiful p-6 text-center">
         <div class="text-sm text-gray-600 mb-2">Avg %</div>
@@ -5688,6 +6166,9 @@ function renderResultsView() {
 
     <div class="card-beautiful p-8">
       <h3 class="text-2xl font-bold text-blue-900 mb-6">Submissions</h3>
+      <div style="margin-bottom:16px">
+        <input id="submissionSearchInput" class="input-beautiful" placeholder="Search student name or email / ID" />
+      </div>
       <div id="submissionsList" class="space-y-4"></div>
     </div>
   `;
@@ -5702,24 +6183,31 @@ function renderResultsView() {
     document.getElementById('btnExportXLSX').onclick = () => {
       if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
       const ranks = computeRankingForQuiz(q.id);
-      const header = ['Name','Email / Reg No','Facility','Score','%','Status','Adjusted','Correction Request','Correction Message','Correction Contact','Correction Share Status','Correction Activity Time','IP','Tab switches','Time (min)','Rank','Submitted'];
+      const subjectColumns = getTeacherSummarySubjectColumns(q, submissions);
+      const header = ['Name','Email / Reg No','Facility', ...subjectColumns.map((name) => `${name} Score`), 'Total Score','Average %','Overall %','Status','Adjusted','Correction Request','Correction Message','Correction Contact','Correction Share Status','Correction Activity Time','IP','Tab switches','Time (min)','Rank','Submitted'];
       const data = [header];
       submissions.forEach(s => {
+        const breakdown = getSubmissionSubjectBreakdownForDisplay(q, s);
         const correctionContact = getSubmissionCorrectionContact(s);
         const correctionShare = getSubmissionCorrectionShareMeta(s);
-        data.push([s.name, s.email, s.facility || q.facility || '', formatScoreValue(s.score), s.percent, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), (s.monitoring && s.monitoring.ipAddress) || '', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
+        const subjectScores = subjectColumns.map((subjectName) => {
+          const item = breakdown.find((entry) => normalizeSubjectName(entry.name) === normalizeSubjectName(subjectName));
+          return item ? `${formatScoreValue(item.score)}/${formatScoreValue(item.totalMarks || item.total)}` : '';
+        });
+        data.push([s.name, s.email, s.facility || q.facility || '', ...subjectScores, `${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}`, `${getSubmissionAveragePercent(s, q)}%`, `${s.percent || 0}%`, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), (s.monitoring && s.monitoring.ipAddress) || '', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
       });
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(data);
-      ws['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 24 }, { wch: 22 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 22 }];
+      ws['!cols'] = header.map((column, index) => ({ wch: index < 2 ? 24 : column.includes('Message') ? 28 : column.includes('Score') ? 16 : 14 }));
       XLSX.utils.book_append_sheet(wb, ws, 'Results');
-      XLSX.writeFile(wb, `results-${q.id}.xlsx`);
+      XLSX.writeFile(wb, `${makeSafeFilenamePart(q.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${q.id}).xlsx`);
       showNotification('  Exported to Excel', 'success');
     };
     document.getElementById('btnExportSummaryPDF').onclick = () => {
+      if ((q.subjects || []).length > 1) return showTeacherSummaryPdfFormatModal(q, submissions);
       downloadPdfFromHtml(
         buildTeacherSummaryPdfHtml(q, submissions),
-        `results-summary-${q.id}.pdf`,
+        `${makeSafeFilenamePart(q.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${q.id}).pdf`,
         'Teacher result summary PDF downloaded',
         { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
       );
@@ -5734,73 +6222,99 @@ function renderResultsView() {
       list.innerHTML = '<p class="text-gray-500 text-center py-8">No submissions yet.</p>';
     } else {
       const ranks = computeRankingForQuiz(q.id);
-      const rows = submissions.map(s => {
-        const correctionContact = getSubmissionCorrectionContact(s);
-        const correctionShare = getSubmissionCorrectionShareMeta(s);
-        const correctionShareStamp = formatCorrectionActivityStamp(correctionShare.timestamp);
-        return `
-          <tr>
-            <td>${escapeHtml(s.name || '')}</td>
-            <td>${escapeHtml(s.email || '')}</td>
-            <td>${s.facility || q.facility || ''}</td>
-            <td class="text-right">${formatScoreValue(s.score)}/${(s.allQuestions || []).length}${hasManualScoreOverride(s) ? '<div class="small" style="color:#B45309;font-weight:700">Adjusted</div>' : ''}</td>
-            <td class="text-right">${s.percent}%</td>
-            <td class="text-right">${escapeHtml(s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'))}</td>
-            <td class="text-right">${escapeHtml((s.monitoring && s.monitoring.ipAddress) || '')}</td>
-            <td class="text-right">${(s.monitoring && s.monitoring.tabSwitches) || 0}</td>
-            <td class="text-right">${Math.floor((s.timeSpent||0) / 60)}m</td>
-            <td class="text-right">${ranks[normalizeEmail(s.email)] || ''}</td>
-            <td class="text-right">
-              ${s.correctionRequested
-                ? `<span class="req-badge req-pending" title="${escapeHtml(s.correctionMessage || '')}">Requested</span>`
-                : '<span class="req-badge">None</span>'}
-              <div class="small" style="margin-top:6px">${escapeHtml(correctionContact.label || 'No contact provided')}</div>
-              <div class="small" style="margin-top:4px;color:#64748B">${escapeHtml(correctionShare.label)}${correctionShareStamp ? ` • ${escapeHtml(correctionShareStamp)}` : ''}</div>
-            </td>
-            <td class="text-right">
-              <div class="row-action-shell">
-                <select class="input-beautiful row-action-select submissionActionSelect" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">
-                  <option value="">Choose action</option>
-                  <option value="edit-score">Edit Score</option>
-                  <option value="download-correction">Download Correction</option>
-                  <option value="send-email">Send Email</option>
-                  <option value="send-whatsapp">Send WhatsApp</option>
-                  <option value="delete">Delete Result</option>
-                </select>
-                <button class="btn-pastel-secondary btnApplySubmissionAction" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Apply</button>
-              </div>
-            </td>
-          </tr>
-        `;
-      }).join('');
+      const renderSubmissionTable = (query = '') => {
+        const normalizedQuery = (query || '').toString().trim().toLowerCase();
+        const visibleSubmissions = normalizedQuery
+          ? submissions.filter((item) => `${item.name || ''} ${item.email || ''} ${item.registrationNo || ''}`.toLowerCase().includes(normalizedQuery))
+          : submissions;
+        const rows = visibleSubmissions.map(s => {
+          const breakdown = getSubmissionSubjectBreakdownForDisplay(q, s);
+          const correctionContact = getSubmissionCorrectionContact(s);
+          const correctionShare = getSubmissionCorrectionShareMeta(s);
+          const correctionShareStamp = formatCorrectionActivityStamp(correctionShare.timestamp);
+          return `
+            <tr data-student-row="${encodeURIComponent((s.submissionId || buildSubmissionIdentity(s)))}">
+              <td>${escapeHtml(s.name || '')}</td>
+              <td>${escapeHtml(s.email || s.registrationNo || '')}</td>
+              <td>${s.facility || q.facility || ''}</td>
+              <td>${breakdown.length ? breakdown.map((item) => `<div><strong>${escapeHtml(item.name)}:</strong> ${formatScoreValue(item.score)} / ${formatScoreValue(item.totalMarks || item.total)}</div>`).join('') : '<div>-</div>'}</td>
+              <td class="text-right">${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}${hasManualScoreOverride(s) ? '<div class="small" style="color:#B45309;font-weight:700">Adjusted</div>' : ''}</td>
+              <td class="text-right">${getSubmissionAveragePercent(s, q)}%</td>
+              <td class="text-right">${s.percent}%</td>
+              <td class="text-right">${escapeHtml(s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'))}</td>
+              <td class="text-right">${escapeHtml((s.monitoring && s.monitoring.ipAddress) || '')}</td>
+              <td class="text-right">${(s.monitoring && s.monitoring.tabSwitches) || 0}</td>
+              <td class="text-right">${Math.floor((s.timeSpent||0) / 60)}m</td>
+              <td class="text-right">${ranks[normalizeEmail(s.email)] || ''}</td>
+              <td class="text-right">
+                ${s.correctionRequested
+                  ? `<span class="req-badge req-pending" title="${escapeHtml(s.correctionMessage || '')}">Requested</span>`
+                  : '<span class="req-badge">None</span>'}
+                <div class="small" style="margin-top:6px">${escapeHtml(correctionContact.label || 'No contact provided')}</div>
+                <div class="small" style="margin-top:4px;color:#64748B">${escapeHtml(correctionShare.label)}${correctionShareStamp ? ` • ${escapeHtml(correctionShareStamp)}` : ''}</div>
+              </td>
+              <td class="text-right">
+                <div class="row-action-shell">
+                  <select class="input-beautiful row-action-select submissionActionSelect" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">
+                    <option value="">Choose action</option>
+                    ${q.audienceMode !== 'class' ? '<option value="edit-name">Edit Name</option>' : ''}
+                    <option value="edit-score">Edit Score</option>
+                    <option value="download-correction">Download Correction</option>
+                    <option value="send-email">Send Email</option>
+                    <option value="send-whatsapp">Send WhatsApp</option>
+                    <option value="delete">Delete Result</option>
+                  </select>
+                  <button class="btn-pastel-secondary btnApplySubmissionAction" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Apply</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('');
 
-      list.innerHTML = `
-        <div class="card-beautiful p-4">
-          <div class="overflow-x-auto">
-            <table class="table-dense w-full">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Email / Reg No</th>
-                  <th>Facility</th>
-                  <th class="text-right">Score</th>
-                  <th class="text-right">%</th>
-                  <th class="text-right">Status</th>
-                  <th class="text-right">IP</th>
-                  <th class="text-right">Tabs</th>
-                  <th class="text-right">Time</th>
-                  <th class="text-right">Rank</th>
-                  <th class="text-right">Correction</th>
-                  <th class="text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${rows}
-              </tbody>
-            </table>
+        list.innerHTML = `
+          <div class="card-beautiful p-4">
+            <div class="overflow-x-auto">
+              <table class="table-dense w-full">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email / Reg No</th>
+                    <th>Facility</th>
+                    <th>Subjects &amp; Scores</th>
+                    <th class="text-right">Total</th>
+                    <th class="text-right">Average %</th>
+                    <th class="text-right">Overall %</th>
+                    <th class="text-right">Status</th>
+                    <th class="text-right">IP</th>
+                    <th class="text-right">Tabs</th>
+                    <th class="text-right">Time</th>
+                    <th class="text-right">Rank</th>
+                    <th class="text-right">Correction</th>
+                    <th class="text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows || '<tr><td colspan="14" class="text-center">No student matched your search.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      `;
+        `;
+        list.querySelectorAll('[data-student-row]').forEach((row) => {
+          row.onclick = () => {
+            list.querySelectorAll('[data-student-row]').forEach((item) => {
+              item.style.background = '';
+              item.style.outline = '';
+            });
+            row.style.background = '#EFF6FF';
+            row.style.outline = '1px solid #BFDBFE';
+          };
+        });
+        if (typeof window.__opeWireSubmissionButtons === 'function') window.__opeWireSubmissionButtons();
+      };
+      renderSubmissionTable();
+      const searchInput = document.getElementById('submissionSearchInput');
+      if (searchInput) searchInput.oninput = () => renderSubmissionTable(searchInput.value || '');
     }
 
     // Wire per-student correction PDF buttons
@@ -5810,6 +6324,23 @@ function renderResultsView() {
         const quizId = ev.currentTarget.dataset.quiz;
         const email = decodeURIComponent(ev.currentTarget.dataset.email || '');
         const submittedAt = ev.currentTarget.dataset.submitted || '';
+        if (action === 'edit-name') {
+          if (q.audienceMode === 'class') return showNotification('For class-based quizzes, edit student names from the Students portal.', 'warning', 7000);
+          const all = getAllSubmissions();
+          const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
+          if (index < 0) return showNotification('Submission not found', 'error');
+          const currentName = (all[index].name || '').toString().trim();
+          const nextName = window.prompt('Enter the corrected student name', currentName);
+          if (nextName == null) return;
+          const trimmedName = nextName.trim();
+          if (!trimmedName) return showNotification('Student name cannot be empty.', 'error');
+          all[index].name = trimmedName;
+          all[index].updatedAt = new Date().toISOString();
+          saveAllSubmissions(all);
+          showNotification('Student name updated', 'success');
+          render();
+          return;
+        }
         if (action === 'edit-score') {
           const all = getAllSubmissions();
           const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
@@ -5879,12 +6410,16 @@ function renderResultsView() {
           render();
         }
       };
-      document.querySelectorAll('.btnApplySubmissionAction').forEach(btn => btn.onclick = async (ev) => {
-        const selector = ev.currentTarget.parentElement.querySelector('.submissionActionSelect');
-        const action = selector ? selector.value : '';
-        await runSubmissionAction(action, ev);
-        if (selector) selector.value = '';
-      });
+      const wireSubmissionActionButtons = () => {
+        document.querySelectorAll('.btnApplySubmissionAction').forEach(btn => btn.onclick = async (ev) => {
+          const selector = ev.currentTarget.parentElement.querySelector('.submissionActionSelect');
+          const action = selector ? selector.value : '';
+          await runSubmissionAction(action, ev);
+          if (selector) selector.value = '';
+        });
+      };
+      window.__opeWireSubmissionButtons = wireSubmissionActionButtons;
+      wireSubmissionActionButtons();
     }, 100);
   }, 0);
 
@@ -5911,85 +6446,144 @@ function showExamAnalysisModal(q) {
     inner.className = 'card-beautiful p-6';
     inner.style.width = '90%';
     inner.style.maxWidth = '1000px';
+    const subjectNames = Array.from(new Set(data.map((item) => item.subject || 'General')));
+    let selectedSubject = subjectNames[0] || 'General';
     inner.innerHTML = `
-      <div class="flex justify-between items-center mb-4">
-        <h3 class="text-2xl font-bold">  Exam Analysis   Facility Index</h3>
-        <div class="flex gap-2">
-          <button id="btnAnalysisExportXLS" class="btn-pastel-secondary">  Export Excel</button>
-          <button id="btnAnalysisExportPDF" class="btn-pastel-primary">  Export PDF</button>
-          <button id="btnCloseAnalysis" class="btn-pastel-secondary">  Close</button>
+      <div class="flex justify-between items-center mb-4" style="gap:12px;flex-wrap:wrap">
+        <div>
+          <h3 class="text-2xl font-bold">Exam Analysis • Facility Index</h3>
+          <div class="small">Review one subject at a time and export only the subject you open.</div>
+        </div>
+        <div class="flex gap-2" style="flex-wrap:wrap">
+          <button id="btnAnalysisExportXLS" class="btn-pastel-secondary">Export Excel</button>
+          <button id="btnAnalysisExportPDF" class="btn-pastel-primary">Export PDF</button>
+          ${subjectNames.length > 1 ? '<button id="btnAnalysisExportAllPDF" class="btn-pastel-secondary">Export All PDFs</button>' : ''}
+          <button id="btnCloseAnalysis" class="btn-pastel-secondary">Close</button>
         </div>
       </div>
-      <div id="analysisContent" style="max-height:60vh;overflow:auto;"></div>
+      ${subjectNames.length > 1 ? `
+        <div style="margin-bottom:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <label class="small" for="analysisSubjectSelect" style="font-weight:700">Subject</label>
+          <select id="analysisSubjectSelect" class="input-beautiful" style="min-width:240px">
+            ${subjectNames.map((name) => `<option value="${escapeHtml(name)}"${name === selectedSubject ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('')}
+          </select>
+        </div>
+      ` : ''}
+      <div id="analysisContent" style="max-height:60vh;overflow:auto;padding-right:8px"></div>
     `;
 
     modal.appendChild(inner);
     document.body.appendChild(modal);
 
     const content = inner.querySelector('#analysisContent');
-    if (!data || !data.length) {
-      content.innerHTML = '<p class="text-gray-600">No submissions yet to analyze.</p>';
-    } else {
-      // Group by subject, sort each subject's questions by facilityIndex ascending (most failed first)
-      const grouped = {};
-      for (const r of data) {
-        const subj = r.subject || 'General'; if (!grouped[subj]) grouped[subj]=[]; grouped[subj].push(r);
-      }
-      const subjKeys = Object.keys(grouped).sort((left, right) => {
-        const average = (items) => {
-          const usable = items.filter((item) => item.facilityIndex != null);
-          if (!usable.length) return 1;
-          return usable.reduce((sum, item) => sum + item.facilityIndex, 0) / usable.length;
-        };
-        return average(grouped[left]) - average(grouped[right]);
-      });
-      let html = '';
-      for (const sk of subjKeys) {
-        const items = grouped[sk].slice().sort((a,b)=>{
-          const va = a.facilityIndex === null ? 1 : a.facilityIndex;
-          const vb = b.facilityIndex === null ? 1 : b.facilityIndex;
-          return va - vb;
+    const renderContent = () => {
+      const visibleData = (data || [])
+        .filter((item) => (item.subject || 'General') === selectedSubject)
+        .slice()
+        .sort((left, right) => {
+          const leftValue = left.facilityIndex == null ? 1 : left.facilityIndex;
+          const rightValue = right.facilityIndex == null ? 1 : right.facilityIndex;
+          return leftValue - rightValue;
         });
-        html += `<h4 style="margin-top:12px;margin-bottom:6px">Subject: ${escapeHtml(sk)}</h4>`;
-        for (const r of items) {
-          const fi = r.facilityIndex === null ? ' ' : (r.facilityIndex.toFixed(3) + ' (' + Math.round(r.facilityIndex*100) + '%)');
-          const interp = r.facilityIndex === null ? 'No attempts' : (r.facilityIndex <= 0.3 ? 'Very difficult' : r.facilityIndex <= 0.5 ? 'Difficult' : r.facilityIndex <= 0.7 ? 'Moderate' : 'Easy');
-          const opts = (r.optionCounts || []).map(item => {
-            const isCorrect = (r.answer || '').toString().toUpperCase() === item.letter;
-            return `<li style="list-style:none;margin:6px 0;padding:8px;border-radius:8px;display:flex;justify-content:space-between;gap:12px;${isCorrect ? 'background:#ecfdf5;border:1px solid #10b981;font-weight:700;' : 'background:#fbfdff;border:1px solid #e6eef6;'}"><span>${item.letter}. ${escapeHtml(item.option)} ${isCorrect ? '<span style="color:#059669;margin-left:8px">Correct answer</span>' : ''}</span><strong>${item.count} student(s)</strong></li>`;
-          }).join('');
-          html += `<div class="p-4 mb-4" style="border-bottom:1px solid rgba(2,6,23,0.06);"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;"><div style="font-weight:700">Q${r.index}   <span style="font-weight:600">${escapeHtml(r.subject)}</span></div><div style="color:#475569">Facility: ${fi} &nbsp;   &nbsp; ${interp}</div></div><div style="margin-top:8px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;font-size:1rem;color:#0b1220">${escapeHtml(r.question)}</div><div class="small" style="margin-top:8px">Seen by ${r.seen} student(s), attempted by ${r.attempted}, correct ${r.correct}, unanswered ${r.unanswered}, not seen by ${r.notSeen}</div><ul style="margin-top:12px;padding:0">${opts}</ul></div>`;
-        }
+      if (!visibleData.length) {
+        content.innerHTML = '<p class="text-gray-600">No submissions yet to analyze for this subject.</p>';
+        return;
       }
-      content.innerHTML = `<div style="max-height:60vh;overflow:auto;padding-right:8px">${html}</div>`;
-    }
+      const summary = getFacilityAnalysisSummary(visibleData);
+      const orderedBands = ['Very Difficult', 'Difficult', 'Moderate', 'Easy', 'Very Easy'];
+      const bandSections = orderedBands.map((label) => ({
+        label,
+        items: visibleData.filter((item) => getFacilityDifficultyBand(item.facilityIndex).label === label)
+      })).filter((section) => section.items.length);
+      content.innerHTML = `
+        <div class="card-beautiful" style="padding:16px;border:1px solid #E2E8F0;background:#F8FAFC;margin-bottom:14px">
+          <div class="h3">${escapeHtml(selectedSubject)}</div>
+          <div class="small" style="margin-top:6px">Quiz ID: ${escapeHtml(q.id || '')}</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px">
+            <div class="card" style="padding:12px;background:#fff;border:1px solid #DBEAFE"><strong>Average Facility Index</strong><div style="font-size:24px;margin-top:6px">${summary.average}%</div></div>
+            <div class="card" style="padding:12px;background:#fff;border:1px solid #DBEAFE"><strong>Total Questions</strong><div style="font-size:24px;margin-top:6px">${summary.totalQuestions}</div></div>
+            <div class="card" style="padding:12px;background:#fff;border:1px solid #DBEAFE"><strong>Easy / Moderate / Difficult</strong><div style="margin-top:6px">${summary.percentages.easy}% / ${summary.percentages.moderate}% / ${summary.percentages.difficult}%</div></div>
+          </div>
+          <div style="display:flex;height:10px;border-radius:999px;overflow:hidden;margin-top:14px;background:#E2E8F0">
+            <span style="width:${summary.percentages.difficult}%;background:#FCA5A5"></span>
+            <span style="width:${summary.percentages.moderate}%;background:#FDE68A"></span>
+            <span style="width:${summary.percentages.easy}%;background:#7DD3FC"></span>
+          </div>
+        </div>
+        ${bandSections.map((section) => {
+          const band = getFacilityDifficultyBand(section.items[0].facilityIndex);
+          return `
+            <div style="margin-bottom:18px">
+              <div style="padding:10px 14px;border-radius:12px;background:${band.color};border:1px solid ${band.accent};font-weight:800;color:${band.text};margin-bottom:10px">${section.label} (${band.min}-${band.max}%)</div>
+              ${section.items.map((item) => {
+                const facilityPercent = item.facilityIndex == null ? 'No attempts' : `${Math.round(item.facilityIndex * 100)}%`;
+                const optionsMarkup = (item.optionCounts || []).map((option) => {
+                  const isCorrect = (item.answer || '').toString().toUpperCase() === option.letter;
+                  return `<div style="padding:8px 10px;border-radius:10px;border:1px solid ${isCorrect ? '#6EE7B7' : '#E2E8F0'};background:${isCorrect ? '#ECFDF5' : '#FFFFFF'};display:flex;justify-content:space-between;gap:12px"><span>${option.letter}. ${escapeHtml(option.option)}</span><strong>${option.count}</strong></div>`;
+                }).join('');
+                return `
+                  <div class="card-beautiful" style="padding:16px;margin-bottom:12px;border:1px solid #E2E8F0;box-shadow:none">
+                    <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+                      <div style="font-weight:800">Question ${item.index}</div>
+                      <div style="font-weight:700;color:#334155">${facilityPercent} • ${section.label}</div>
+                    </div>
+                    <div style="margin-top:10px;font-size:16px;line-height:1.6;white-space:pre-wrap;word-break:break-word">${escapeHtml(item.question || '')}</div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:12px">${optionsMarkup}</div>
+                    <div class="small" style="margin-top:12px;line-height:1.7">Correct answer: <strong>${escapeHtml(item.answer || '')}</strong> • Seen: <strong>${item.seen}</strong> • Attempted: <strong>${item.attempted}</strong> • Correct: <strong>${item.correct}</strong> • Wrong: <strong>${Math.max(0, item.attempted - item.correct)}</strong></div>
+                    <div class="small" style="margin-top:6px;line-height:1.7">Topic: <strong>${escapeHtml(item.topic || 'Not set')}</strong></div>
+                    <div class="small" style="margin-top:6px;line-height:1.7">Explanation: ${escapeHtml(item.explanation || 'No explanation provided yet.')}</div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `;
+        }).join('')}
+      `;
+    };
+    renderContent();
 
     // Wire close
     document.getElementById('btnCloseAnalysis').onclick = () => modal.remove();
+    const subjectSelect = document.getElementById('analysisSubjectSelect');
+    if (subjectSelect) subjectSelect.onchange = () => {
+      selectedSubject = subjectSelect.value || subjectNames[0] || 'General';
+      renderContent();
+    };
 
     // Export handlers
     document.getElementById('btnAnalysisExportXLS').onclick = () => {
       if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
-      const maxOptions = Math.max(0, ...data.map(r => (r.optionCounts || []).length));
+      const visibleData = data.filter((item) => (item.subject || 'General') === selectedSubject);
+      const maxOptions = Math.max(0, ...visibleData.map(r => (r.optionCounts || []).length));
       const optionHeaders = [];
       for (let i = 0; i < maxOptions; i++) optionHeaders.push(`Option ${String.fromCharCode(65+i)} Count`);
-      const header = ['Q#','Subject','Question','Seen','Attempted','Correct','Unanswered','Not Seen','Facility','Interpretation', ...optionHeaders];
-      const rows = data.map(r => {
+      const header = ['Q#','Subject','Question','Topic','Explanation','Seen','Attempted','Correct','Unanswered','Not Seen','Facility %','Interpretation', ...optionHeaders];
+      const rows = visibleData.map(r => {
+        const band = getFacilityDifficultyBand(r.facilityIndex);
         const optionValues = [];
         for (let i = 0; i < maxOptions; i++) optionValues.push((r.optionCounts || [])[i]?.count || 0);
-        return [r.index, r.subject, r.question, r.seen, r.attempted, r.correct, r.unanswered, r.notSeen, r.facilityIndex === null ? '' : (r.facilityIndex.toFixed(3)), r.facilityIndex === null ? 'No attempts' : (r.facilityIndex <= 0.3 ? 'Very difficult' : r.facilityIndex <= 0.5 ? 'Difficult' : r.facilityIndex <= 0.7 ? 'Moderate' : 'Easy'), ...optionValues];
+        return [r.index, r.subject, r.question, r.topic || '', r.explanation || '', r.seen, r.attempted, r.correct, r.unanswered, r.notSeen, r.facilityIndex === null ? '' : Math.round(r.facilityIndex * 100), r.facilityIndex === null ? 'No attempts' : band.label, ...optionValues];
       });
       const aoa = [header, ...rows];
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       XLSX.utils.book_append_sheet(wb, ws, 'FacilityIndex');
-      XLSX.writeFile(wb, `facility-index-${q.id}.xlsx`);
-      showNotification('  Exported Facility Index', 'success');
+      XLSX.writeFile(wb, `${makeSafeFilenamePart(selectedSubject, 'subject')} FACILITY INDEX (${q.id}).xlsx`);
+      showNotification('Facility index Excel exported', 'success');
     };
     document.getElementById('btnAnalysisExportPDF').onclick = () => {
       try {
-        downloadFacilityIndexPdfText(q, data).then(() => showNotification('Facility index PDF downloaded', 'success'));
+        const visibleData = data.filter((item) => (item.subject || 'General') === selectedSubject);
+        downloadFacilityIndexPdfText(q, visibleData, { subjectName: selectedSubject }).then(() => showNotification('Facility index PDF downloaded', 'success'));
       } catch(e) { console.error(e); showNotification('Error exporting PDF', 'error'); }
+    };
+    const exportAllBtn = document.getElementById('btnAnalysisExportAllPDF');
+    if (exportAllBtn) exportAllBtn.onclick = async () => {
+      for (const subjectName of subjectNames) {
+        const visibleData = data.filter((item) => (item.subject || 'General') === subjectName);
+        await downloadFacilityIndexPdfText(q, visibleData, { subjectName });
+      }
+      showNotification('All subject facility index PDFs downloaded', 'success');
     };
 
   } catch (e) { console.error('Analysis error', e); showNotification('Error generating analysis', 'error'); }
@@ -5997,6 +6591,16 @@ function showExamAnalysisModal(q) {
 
 // Small helper to escape HTML in strings
 function escapeHtml(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function hexToRgbTriplet(hex) {
+  const value = (hex || '').toString().replace('#', '');
+  if (value.length !== 6) return [226, 232, 240];
+  return [
+    parseInt(value.slice(0, 2), 16),
+    parseInt(value.slice(2, 4), 16),
+    parseInt(value.slice(4, 6), 16)
+  ];
+}
 
 // ============================================================================
 // INITIALIZATION
@@ -6086,8 +6690,9 @@ function showCreateQuizModal(editQuizId = '') {
               <input id="cqTime" class="input-beautiful" placeholder="Time limit (minutes)" />
             </div>
             <div class="form-group">
-              <label class="form-label" for="cqMaxGrade">Max grade</label>
-              <input id="cqMaxGrade" class="input-beautiful" placeholder="Max grade" />
+              <label class="form-label" for="cqMaxGrade">Total quiz marks</label>
+              <input id="cqMaxGrade" class="input-beautiful" placeholder="Auto-calculated from subjects" readonly />
+              <p class="helper-text">This now comes from the marks you assign to each subject below.</p>
             </div>
             <div class="form-group">
               <label class="form-label" for="cqAttemptLimit">Attempt limit</label>
@@ -6270,6 +6875,13 @@ function showCreateQuizModal(editQuizId = '') {
             <span class="subject-time-unit">questions</span>
           </div>
         </div>
+        <div class="subject-field">
+          <label class="small">Total marks for this subject</label>
+          <div class="subject-time-wrap">
+            <input type="number" class="input-beautiful subject-marks" min="0" step="0.01" placeholder="e.g. 100" value="${subject.totalMarks ? escapeHtml(subject.totalMarks) : ''}" />
+            <span class="subject-time-unit">marks</span>
+          </div>
+        </div>
         <button type="button" class="subject-remove-btn" aria-label="Remove subject">✕</button>
       `;
       row.querySelector('.subject-upload-btn').onclick = () => {
@@ -6316,12 +6928,18 @@ function showCreateQuizModal(editQuizId = '') {
     const getSubjectRows = () => Array.from(subjectsList.querySelectorAll('.subject-row')).map(row => {
       const name = row.querySelector('.subject-name').value.trim();
       const countValue = row.querySelector('.subject-count').value;
+      const marksValue = row.querySelector('.subject-marks').value;
       return {
         name,
         questionCount: countValue === '' ? null : (parseInt(countValue, 10) || 0),
+        totalMarks: marksValue === '' ? null : (parseFloat(marksValue) || 0),
         importedQuestions: (row._importedQuestions || []).filter(isMeaningfulQuestion)
       };
     }).filter(subject => subject.name);
+    const updateDerivedTotalMarks = () => {
+      const totalMarks = getSubjectRows().reduce((sum, subject) => sum + getSubjectTotalMarks(subject), 0);
+      document.getElementById('cqMaxGrade').value = totalMarks ? formatScoreValue(totalMarks) : '';
+    };
     const getSignatoryRows = () => Array.from(signatoriesList.querySelectorAll('.signatory-row')).map((row) => ({
       name: row.querySelector('.signatory-name').value.trim(),
       title: row.querySelector('.signatory-title').value.trim(),
@@ -6362,6 +6980,7 @@ function showCreateQuizModal(editQuizId = '') {
       (editingQuiz.subjects || []).forEach(subject => createSubjectRow({
         name: subject.name || 'General',
         questionCount: subject.questionCount ?? null,
+        totalMarks: subject.totalMarks ?? subject.maxScore ?? null,
         importedQuestions: Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions
       }));
       document.getElementById('cqShuffleQs').checked = editingQuiz.shuffleQs !== false;
@@ -6378,6 +6997,9 @@ function showCreateQuizModal(editQuizId = '') {
       document.getElementById('cqCalculatorType').value = 'basic';
     }
     if (!subjectsList.children.length) createSubjectRow();
+    subjectsList.addEventListener('input', updateDerivedTotalMarks);
+    subjectsList.addEventListener('change', updateDerivedTotalMarks);
+    updateDerivedTotalMarks();
     updateAudienceState();
     audienceSelect.onchange = updateAudienceState;
     document.getElementById('btnAddSubject').onclick = () => createSubjectRow();
@@ -6485,7 +7107,6 @@ function showCreateQuizModal(editQuizId = '') {
       const assignedClassName = normalizeClassName(assignedClassSelect.value || '');
       const password = document.getElementById('cqPassword').value || '';
       const time = parseInt(document.getElementById('cqTime').value,10) || 0;
-      const maxGrade = parseFloat(document.getElementById('cqMaxGrade').value) || 100;
       const attemptLimit = parseInt(document.getElementById('cqAttemptLimit').value,10) || 1;
       const passMark = parseFloat(document.getElementById('cqPassMark').value) || 50;
       const negativeMarkEnabled = document.getElementById('cqNegativeEnabled').checked;
@@ -6514,19 +7135,22 @@ function showCreateQuizModal(editQuizId = '') {
             name: subject.name,
             questions,
             bankQuestions: questions.slice(),
-            questionCount: subject.questionCount || null
+            questionCount: subject.questionCount || null,
+            totalMarks: getSubjectTotalMarks(subject)
           };
         });
       } else {
         subjectsArr = (editingQuiz.subjects || []).map((subject, idx) => ({
           ...subject,
           name: subjects[idx]?.name || subject.name || 'General',
-          questionCount: subjects[idx]?.questionCount ?? subject.questionCount ?? null
+          questionCount: subjects[idx]?.questionCount ?? subject.questionCount ?? null,
+          totalMarks: getSubjectTotalMarks(subjects[idx] || subject)
         }));
       }
 
       const id = editingQuiz ? editingQuiz.id : gen6DigitId();
       const now = new Date().toISOString();
+      const maxGrade = getQuizTotalMarks({ subjects: subjectsArr });
       const selectedStudents = audienceMode === 'class'
         ? getStudentsForTeacher(quizOwnerId).filter((student) => normalizeClassName(student.className || student.class || '') === assignedClassName)
         : [];
@@ -6580,8 +7204,17 @@ function parseQuestionsFromCSVString(s) {
   for (const line of lines) {
     const parts = line.split(/\s*,\s*/);
     if ((parts[0] || '').toLowerCase() === 'question') continue;
-    // question, optA, optB, optC, optD, answer, topic, difficulty
-    const q = { question: parts[0] || '', options: parts.slice(1,5).filter(Boolean), answer: (parts[5]||'').toString().trim().toUpperCase(), topic: parts[6]||'', difficulty: parts[7]||'Medium' };
+    // question, optA, optB, optC, optD, answer, topic, difficulty, explanation, learningPoint, keyConcept
+    const q = {
+      question: parts[0] || '',
+      options: parts.slice(1,5).filter(Boolean),
+      answer: (parts[5]||'').toString().trim().toUpperCase(),
+      topic: parts[6]||'',
+      difficulty: parts[7]||'Medium',
+      explanation: parts[8] || '',
+      learningPoint: parts[9] || '',
+      keyConcept: parts[10] || ''
+    };
     if (isMeaningfulQuestion(q)) out.push(q);
   }
   return out;
@@ -6603,8 +7236,17 @@ function parseQuestionsFile(file, whitelistOnly) {
             const list = rows.map(r=>({ name: r[0]||'', email: (r[1]||'').toString(), id: (r[2]||'').toString(), registrationNo: (r[2]||'').toString(), className: normalizeClassName(r[3] || '') } )).filter(x=>x.name && (x.email || x.id));
             resolve(list);
           } else {
-            // assume columns: question,optA,optB,optC,optD,answer,topic,difficulty
-            const list = rows.map(r=>({ question: r[0]||'', options: [r[1]||'',r[2]||'',r[3]||'',r[4]||''].filter(Boolean), answer: (r[5]||'').toString().toUpperCase(), topic: r[6]||'', difficulty: r[7]||'Medium' })).filter(isMeaningfulQuestion);
+            // assume columns: question,optA,optB,optC,optD,answer,topic,difficulty,explanation,learningPoint,keyConcept
+            const list = rows.map(r=>({
+              question: r[0]||'',
+              options: [r[1]||'',r[2]||'',r[3]||'',r[4]||''].filter(Boolean),
+              answer: (r[5]||'').toString().toUpperCase(),
+              topic: r[6]||'',
+              difficulty: r[7]||'Medium',
+              explanation: r[8] || '',
+              learningPoint: r[9] || '',
+              keyConcept: r[10] || ''
+            })).filter(isMeaningfulQuestion);
             resolve(list);
           }
         } else {
@@ -6643,10 +7285,10 @@ function showLocalNetworkGuide() {
 }
 
 function exportQuizTemplate() {
-  // columns: question,optA,optB,optC,optD,answer,topic,difficulty
-  const header = ['question','optA','optB','optC','optD','answer','topic','difficulty'];
+  // columns: question,optA,optB,optC,optD,answer,topic,difficulty,explanation,learningPoint,keyConcept
+  const header = ['question','optA','optB','optC','optD','answer','topic','difficulty','explanation','learningPoint','keyConcept'];
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([header, ['What is 2+2?','3','4','5','6','B','Arithmetic','Easy']]);
+  const ws = XLSX.utils.aoa_to_sheet([header, ['What is 2+2?','3','4','5','6','B','Arithmetic','Easy','2 + 2 gives 4 because it is simple addition.','Check the numbers and add carefully.','Addition']]);
   XLSX.utils.book_append_sheet(wb, ws, 'Template');
   XLSX.writeFile(wb, 'ope-quiz-template.xlsx');
   showNotification('Template exported','success');
@@ -6722,23 +7364,25 @@ function gradeSubmissionForQuiz(submission, quiz) {
   const all = submission.allQuestions || [];
   const answers = submission.answers || {};
   const answerMap = getQuizAnswerMap(quiz);
-  const negativeEnabled = !!quiz.negativeMarkEnabled;
-  const negativeValue = parseFloat(quiz.negativeMarkValue || 0) || 0;
   let correctCount = 0, wrongCount = 0, attemptedCount = 0;
   all.forEach((question, index) => {
     const chosen = (answers[index] || '').toString().toUpperCase();
     if (!chosen) return;
     attemptedCount++;
     const sourceId = question._sourceId || makeQuestionId(question, index);
-    // Use the student's rendered answer key first (important when options were shuffled).
     const correctAnswer = (question.answer || answerMap[sourceId] || '').toString().toUpperCase();
     if (chosen === correctAnswer) correctCount++;
     else wrongCount++;
   });
-  const rawScore = correctCount - (negativeEnabled ? wrongCount * negativeValue : 0);
-  const score = Math.max(0, Math.round(rawScore * 100) / 100);
-  const percent = all.length ? Math.min(100, Math.max(0, Math.round((score / all.length) * 100))) : 0;
-  return { score, percent, correctCount, wrongCount, attemptedCount, negativePenalty: negativeEnabled ? wrongCount * negativeValue : 0 };
+  const subjectBreakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const score = Math.round(subjectBreakdown.reduce((sum, item) => sum + (item.score || 0), 0) * 100) / 100;
+  const totalMarks = Math.round(subjectBreakdown.reduce((sum, item) => sum + (item.totalMarks || 0), 0) * 100) / 100;
+  const negativePenalty = Math.round(subjectBreakdown.reduce((sum, item) => sum + (item.negativePenalty || 0), 0) * 100) / 100;
+  const percent = totalMarks ? clampPercent((score / totalMarks) * 100) : 0;
+  const averagePercent = subjectBreakdown.length
+    ? Math.round(subjectBreakdown.reduce((sum, item) => sum + (item.percent || 0), 0) / subjectBreakdown.length)
+    : percent;
+  return { score, percent, correctCount, wrongCount, attemptedCount, negativePenalty, totalMarks, subjectBreakdown, averagePercent };
 }
 
 function regradeSubmissionsForQuiz(quiz) {
@@ -6787,6 +7431,7 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
   const answers = submission?.answers || {};
   const negativeEnabled = !!quiz?.negativeMarkEnabled;
   const negativeValue = parseFloat(quiz?.negativeMarkValue || 0) || 0;
+  const subjectMetaMap = getQuizSubjectMetaMap(quiz);
   return sections.map((section) => {
     let attempted = 0;
     let correct = 0;
@@ -6800,19 +7445,49 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
       if (chosen === expected) correct++;
       else wrong++;
     });
-    const rawScore = correct - (negativeEnabled ? wrong * negativeValue : 0);
+    const meta = subjectMetaMap.get(normalizeSubjectName(section.name)) || {};
+    const totalMarks = getSubjectTotalMarks({ totalMarks: meta.totalMarks, questionCount: section.total });
+    const markPerQuestion = section.total > 0 ? totalMarks / section.total : 0;
+    const rawUnits = correct - (negativeEnabled ? wrong * negativeValue : 0);
+    const rawScore = rawUnits * markPerQuestion;
     const score = Math.max(0, Math.round(rawScore * 100) / 100);
-    const percent = section.total ? clampPercent((score / section.total) * 100) : 0;
+    const negativePenalty = negativeEnabled ? Math.round((wrong * negativeValue * markPerQuestion) * 100) / 100 : 0;
+    const percent = totalMarks ? clampPercent((score / totalMarks) * 100) : 0;
     return {
       name: section.name,
       total: section.total,
+      totalMarks,
+      markPerQuestion: Math.round(markPerQuestion * 1000) / 1000,
       attempted,
       correct,
       wrong,
       score,
-      percent
+      percent,
+      negativePenalty
     };
   });
+}
+
+function computeSubmissionTopicBreakdown(quiz, submission) {
+  const grouped = new Map();
+  const answers = submission?.answers || {};
+  (submission?.allQuestions || []).forEach((question, index) => {
+    const subjectName = getQuestionSubjectLabel(question);
+    const topicName = (question?.topic || 'General').toString().trim() || 'General';
+    const subjectKey = normalizeSubjectName(subjectName);
+    if (!grouped.has(subjectKey)) grouped.set(subjectKey, { subjectName, topics: new Map() });
+    const subjectEntry = grouped.get(subjectKey);
+    if (!subjectEntry.topics.has(topicName)) subjectEntry.topics.set(topicName, { name: topicName, total: 0, passed: 0 });
+    const topicEntry = subjectEntry.topics.get(topicName);
+    topicEntry.total++;
+    const chosen = (answers[index] || '').toString().toUpperCase();
+    const expected = (question?.answer || '').toString().toUpperCase();
+    if (chosen && chosen === expected) topicEntry.passed++;
+  });
+  return Array.from(grouped.values()).map((subjectEntry) => ({
+    subjectName: subjectEntry.subjectName,
+    topics: Array.from(subjectEntry.topics.values()).sort((left, right) => left.name.localeCompare(right.name))
+  }));
 }
 
 async function getClientIpAddress() {
@@ -7449,7 +8124,7 @@ function collectAndSubmit() {
     state.currentQuiz = null;
     render();
     if (quiz.showInstantResult !== false) {
-      showNotification(`Submitted. Score: ${formatScoreValue(score)}/${all.length} (${percent}%) - ${sub.resultStatus}`, sub.resultStatus === 'Pass' ? 'success' : 'warning', 7000);
+      showNotification(`Submitted. Score: ${formatScoreValue(score)}/${formatScoreValue(getSubmissionTotalMarks(sub, quiz))} (${percent}%) - ${sub.resultStatus}`, sub.resultStatus === 'Pass' ? 'success' : 'warning', 7000);
       setTimeout(() => showStudentResultModalByLookup(sub.quizId, sub.email, true), 100);
     } else {
       showNotification('Submitted. Result will be released by your teacher.', 'success', 7000);
@@ -7529,7 +8204,9 @@ document.addEventListener('keydown', (e) => {
   const key = (e.key || '').toLowerCase();
   if (!['a', 'b', 'c', 'd', 'n', 'p', 's'].includes(key)) return;
   const activeTag = (document.activeElement && document.activeElement.tagName || '').toLowerCase();
-  if (['input', 'textarea', 'select'].includes(activeTag)) return;
+  const activeType = (document.activeElement && document.activeElement.type || '').toLowerCase();
+  if (['textarea', 'select'].includes(activeTag)) return;
+  if (activeTag === 'input' && activeType !== 'radio') return;
   if (['a', 'b', 'c', 'd'].includes(key)) {
     const idx = state.currentSubmission.currentIndex || 0;
     const radio = document.querySelector(`input[name="opt-${idx}"][value="${key.toUpperCase()}"]`);
