@@ -2057,14 +2057,16 @@ function stripQuestionMediaAssets(questions = []) {
   }));
 }
 
-function buildQuestionsWithSubjectImages(sourceQuestions = [], subjectName = 'General', questionImages = []) {
+function buildQuestionsWithSubjectImages(sourceQuestions = [], subjectName = 'General', questionImages = [], options = {}) {
   const normalizedSubjectName = (subjectName || 'General').toString().trim() || 'General';
   const normalizedQuestions = (Array.isArray(sourceQuestions) ? sourceQuestions : [])
     .filter(isMeaningfulQuestion)
     .map((question, index) => normalizeQuestionForStorage({ ...question, subject: normalizedSubjectName }, index, normalizedSubjectName));
   const normalizedImages = normalizeSubjectQuestionImages(questionImages);
-  if (!normalizedImages.length) return normalizedQuestions;
-  return applySubjectQuestionImagesToQuestions(stripQuestionMediaAssets(normalizedQuestions), normalizedImages);
+  const replaceExistingMedia = !!options.replaceExistingMedia;
+  const baseQuestions = replaceExistingMedia ? stripQuestionMediaAssets(normalizedQuestions) : normalizedQuestions;
+  if (!normalizedImages.length) return baseQuestions;
+  return applySubjectQuestionImagesToQuestions(baseQuestions, normalizedImages);
 }
 
 function deriveSubjectQuestionImagesFromQuestions(questions = []) {
@@ -2252,7 +2254,9 @@ function computeFacilityIndex(quizId) {
   const quizQuestions = [];
   for (const subj of (quiz.subjects || [])) {
     const source = Array.isArray(subj.bankQuestions) && subj.bankQuestions.length ? subj.bankQuestions : subj.questions;
-    const normalizedSource = buildQuestionsWithSubjectImages(source || [], subj.name || 'General', subj.questionImages || []);
+    const normalizedSource = buildQuestionsWithSubjectImages(source || [], subj.name || 'General', subj.questionImages || [], {
+      replaceExistingMedia: Array.isArray(subj.questionImages)
+    });
     for (let i = 0; i < normalizedSource.length; i++) {
       const q = normalizedSource[i];
       quizQuestions.push({
@@ -2368,7 +2372,9 @@ function getQuizQuestionsForTaking(quiz) {
   let allQuestions = [];
   for (const subj of (quiz.subjects || [])) {
     const source = Array.isArray(subj.bankQuestions) && subj.bankQuestions.length ? subj.bankQuestions : subj.questions;
-    let normalized = buildQuestionsWithSubjectImages(source || [], subj.name || 'General', subj.questionImages || []).map((question) => ({
+    let normalized = buildQuestionsWithSubjectImages(source || [], subj.name || 'General', subj.questionImages || [], {
+      replaceExistingMedia: Array.isArray(subj.questionImages)
+    }).map((question) => ({
       ...question,
       _subject: subj.name || question.subject || 'General'
     }));
@@ -6119,7 +6125,7 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   );
 }
 
-function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) {
+async function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) {
   const all = getAllSubmissions();
   const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt || '');
   if (index < 0) return false;
@@ -6129,6 +6135,7 @@ function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) 
     updatedAt: new Date().toISOString()
   };
   saveAllSubmissions(all);
+  await syncSharedKeys([STORAGE_KEYS.submissions]);
   return true;
 }
 
@@ -6143,7 +6150,7 @@ async function sendCorrectionByEmail(submission, quiz) {
     const subject = encodeURIComponent(`Correction for ${quiz.title || submission.quizId}`);
     const body = encodeURIComponent(buildCorrectionShareMessage(submission, quiz));
     window.location.href = `mailto:${encodeURIComponent(targetEmail)}?subject=${subject}&body=${body}`;
-    markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+    await markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
       correctionStatus: 'emailed',
       correctionEmailedAt: new Date().toISOString()
     });
@@ -6166,7 +6173,7 @@ async function shareCorrectionViaWhatsapp(submission, quiz, options = {}) {
   const message = buildCorrectionShareMessage(submission, quiz);
   try {
     openWhatsappChat(phone, message);
-    markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+    await markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
       correctionStatus: 'whatsapp-opened',
       correctionWhatsappAt: new Date().toISOString()
     });
@@ -7859,7 +7866,8 @@ function renderResultsView() {
           all[index].name = trimmedName;
           all[index].updatedAt = new Date().toISOString();
           saveAllSubmissions(all);
-          showNotification('Student name updated', 'success');
+          const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
+          showNotification(sharedSyncOk ? 'Student name updated' : `Student name updated on this device. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
           render();
           return;
         }
@@ -7886,6 +7894,7 @@ function renderResultsView() {
           if (idx2 >= 0) {
             subsAll2[idx2] = s;
             saveAllSubmissions(subsAll2);
+            await syncSharedKeys([STORAGE_KEYS.submissions]);
           }
           render();
         } catch (e) { console.error(e); showNotification('Error generating PDF', 'error'); }
@@ -7927,7 +7936,8 @@ function renderResultsView() {
             updatedAt: new Date().toISOString()
           };
           save(STORAGE_KEYS.submissions, all);
-          showNotification('Submission deleted', 'success');
+          const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
+          showNotification(sharedSyncOk ? 'Submission deleted' : `Submission deleted on this device. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
           render();
         }
       };
@@ -8048,7 +8058,9 @@ function showExamAnalysisModal(q) {
                       <div style="font-weight:800">Question ${item.index}</div>
                       <div style="font-weight:700;color:#334155">${facilityPercent} • ${section.label}</div>
                     </div>
+                    ${renderQuestionMediaAssets(item, 'before')}
                     <div style="margin-top:10px;font-size:16px;line-height:1.6;white-space:normal;word-break:break-word" class="rich-text-output">${renderRichTextHtml(item.question || '')}</div>
+                    ${renderQuestionMediaAssets(item, 'after')}
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:12px">${optionsMarkup}</div>
                     <div class="small" style="margin-top:12px;line-height:1.7">Correct answer: <strong>${escapeHtml(item.answer || '')}</strong> • Seen: <strong>${item.seen}</strong> • Attempted: <strong>${item.attempted}</strong> • Correct: <strong>${item.correct}</strong> • Wrong: <strong>${Math.max(0, item.attempted - item.correct)}</strong></div>
                     <div class="small" style="margin-top:6px;line-height:1.7">Topic:<div class="rich-text-output" style="font-weight:700">${renderRichTextHtml(item.topic || 'Not set')}</div></div>
@@ -8638,7 +8650,7 @@ function showCreateQuizModal(editQuizId = '') {
           : (subjectIndex === 0 ? pastedBank : []);
         return {
           name: subject.name || `Subject ${subjectIndex + 1}`,
-          questions: buildQuestionsWithSubjectImages(sourceBank, subject.name || `Subject ${subjectIndex + 1}`, subject.questionImages || [])
+          questions: buildQuestionsWithSubjectImages(sourceBank, subject.name || `Subject ${subjectIndex + 1}`, subject.questionImages || [], { replaceExistingMedia: true })
         };
       }).filter((subject) => (subject.questions || []).length);
       if (!previewSubjects.length) return showNotification('No questions to preview yet. Upload or paste questions first.', 'error');
@@ -8758,7 +8770,7 @@ function showCreateQuizModal(editQuizId = '') {
             ? subject.importedQuestions
             : (subjectIndex === 0 ? pastedBank : []);
           const questionImages = normalizeSubjectQuestionImages(subject.questionImages || []);
-          const questions = buildQuestionsWithSubjectImages(sourceBank, subject.name, questionImages);
+          const questions = buildQuestionsWithSubjectImages(sourceBank, subject.name, questionImages, { replaceExistingMedia: true });
           return {
             name: subject.name,
             questions,
@@ -8778,7 +8790,7 @@ function showCreateQuizModal(editQuizId = '') {
             || subject.questionImages
             || deriveSubjectQuestionImagesFromQuestions(sourceQuestions)
           );
-          const questions = buildQuestionsWithSubjectImages(sourceQuestions || [], nextName, questionImages);
+          const questions = buildQuestionsWithSubjectImages(sourceQuestions || [], nextName, questionImages, { replaceExistingMedia: true });
           return {
             ...subject,
             name: nextName,
@@ -9290,7 +9302,7 @@ function showCorrectionRequestModal(quiz, submission, onSave) {
   const closeModal = () => modal.remove();
   document.getElementById('closeCorrectionRequestModal').onclick = closeModal;
   document.getElementById('cancelCorrectionRequestModal').onclick = closeModal;
-  document.getElementById('saveCorrectionRequestModal').onclick = () => {
+  document.getElementById('saveCorrectionRequestModal').onclick = async () => {
     const whatsappRaw = document.getElementById('correctionRequestWhatsapp').value.trim();
     const whatsapp = normalizeWhatsappNumber(whatsappRaw);
     const message = (document.getElementById('correctionRequestMessage').value || '').trim();
@@ -9312,8 +9324,12 @@ function showCorrectionRequestModal(quiz, submission, onSave) {
     submission.correctionContact = whatsapp;
     submission.correctionContactChannel = 'whatsapp';
     submission.whatsappNumber = whatsapp;
+    const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
     closeModal();
     if (typeof onSave === 'function') onSave(updated);
+    if (!sharedSyncOk) {
+      showNotification(`Correction request saved on this device. ${getSharedSyncWarningMessage()}`, 'warning', 7000);
+    }
   };
 }
 
@@ -9445,7 +9461,7 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
       try {
         await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true, subjectName: options.correctionSubject || '' });
         const downloadedAt = new Date().toISOString();
-        markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+        await markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
           correctionStatus: 'downloaded',
           correctionDownloadedAt: downloadedAt,
           _correctionDownloaded: true
@@ -9554,7 +9570,7 @@ function showEditSubmissionScoreModal(quiz, submission) {
   input.oninput = renderPreview;
   close.onclick = () => modal.remove();
 
-  save.onclick = () => {
+  save.onclick = async () => {
     const raw = Number(input.value);
     if (input.value === '' || !Number.isFinite(raw)) return showNotification('Enter a valid score', 'error');
     if (raw < 0 || raw > totalQuestions) return showNotification(`Score must be between 0 and ${totalQuestions}`, 'error');
@@ -9569,12 +9585,13 @@ function showEditSubmissionScoreModal(quiz, submission) {
     const nextGrade = buildSubmissionGradeState(all[index], quiz || {}, gradeSubmissionForQuiz(all[index], quiz || {}));
     applyGradeToSubmission(all[index], nextGrade);
     saveAllSubmissions(all);
+    const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
     modal.remove();
-    showNotification('Student score updated', 'success');
+    showNotification(sharedSyncOk ? 'Student score updated' : `Student score updated on this device. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
     render();
   };
 
-  reset.onclick = () => {
+  reset.onclick = async () => {
     if (!confirmTeacherAction(`Reset ${submission.name || submission.email || 'this student'} back to the auto-calculated score?`)) return;
     const all = getAllSubmissions();
     const index = findSubmissionIndexByIdentity(all, submission.quizId, submission.email, submission.submittedAt || '');
@@ -9586,8 +9603,9 @@ function showEditSubmissionScoreModal(quiz, submission) {
     const nextGrade = buildSubmissionGradeState(all[index], quiz || {}, gradeSubmissionForQuiz(all[index], quiz || {}));
     applyGradeToSubmission(all[index], nextGrade);
     saveAllSubmissions(all);
+    const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
     modal.remove();
-    showNotification('Student score reset to auto grade', 'success');
+    showNotification(sharedSyncOk ? 'Student score reset to auto grade' : `Student score reset locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
     render();
   };
 }
