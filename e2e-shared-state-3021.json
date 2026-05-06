@@ -1,0 +1,106 @@
+{
+  "quizzes": {
+    "E2EUKHTQO": {
+      "id": "E2EUKHTQO",
+      "examName": "E2E Sync Quiz moukhtqo",
+      "title": "E2E Sync Quiz moukhtqo",
+      "password": "",
+      "timeLimit": 5,
+      "maxGrade": 1,
+      "attemptLimit": 1,
+      "passMark": 50,
+      "negativeMarkEnabled": false,
+      "negativeMarkValue": 0,
+      "showInstantResult": true,
+      "showTopicsAfterSubmission": true,
+      "subjects": [
+        {
+          "name": "Mathematics",
+          "questionCount": 1,
+          "totalMarks": 1,
+          "questions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ],
+          "bankQuestions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ]
+        }
+      ],
+      "questionPickCount": 0,
+      "createdAt": "2026-05-06T21:26:41.461Z",
+      "editedAt": "",
+      "updatedAt": "2026-05-06T21:26:41.461Z",
+      "teacherId": "teacher.moukhtqo@example.com",
+      "shuffleQs": false,
+      "shuffleOpts": false,
+      "verticalLayout": false,
+      "rankingEnabled": false,
+      "whitelist": [],
+      "audienceMode": "public",
+      "assignedClassName": "",
+      "calculatorType": "none",
+      "webcamRequired": false,
+      "certificateSignatories": [],
+      "scheduleStart": "",
+      "scheduleEnd": "",
+      "cloudSyncedAt": "2026-05-06T21:26:41.487Z"
+    }
+  },
+  "submissions": [],
+  "teachers": {
+    "prosperogidiaka@gmail.com": {
+      "teacherId": "prosperogidiaka@gmail.com",
+      "email": "prosperogidiaka@gmail.com",
+      "password": "7767737Prosper",
+      "role": "super_admin",
+      "name": "",
+      "phone": "",
+      "supportEmail": "prosperogidiaka@gmail.com",
+      "supportWhatsapp": "",
+      "tokenBalance": 9007199254740991,
+      "tokenUpdatedAt": "2026-05-06T21:26:48.880Z",
+      "createdAt": "2026-05-06T21:26:48.881Z",
+      "updatedAt": "2026-05-06T21:26:48.881Z"
+    },
+    "teacher.moukhtqo@example.com": {
+      "teacherId": "teacher.moukhtqo@example.com",
+      "email": "teacher.moukhtqo@example.com",
+      "password": "SyncPass!moukhtqo",
+      "role": "teacher",
+      "name": "",
+      "phone": "",
+      "tokenBalance": 5,
+      "tokenUpdatedAt": "2026-05-06T21:26:41.428Z",
+      "tokenRequestStatus": "",
+      "unlimitedExpiresAt": "",
+      "unlimitedDeviceId": "",
+      "createdAt": "2026-05-06T21:26:41.271Z",
+      "updatedAt": "2026-05-06T21:26:41.428Z",
+      "licenseUpdatedAt": "2026-05-06T21:26:41.428Z"
+    }
+  },
+  "students": {},
+  "tokenTransactions": []
+}

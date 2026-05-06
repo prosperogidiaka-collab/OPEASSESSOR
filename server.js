@@ -23,10 +23,12 @@ const DATA_FILE = process.env.DATA_FILE
   : path.join(DATA_DIR, 'ope-shared-state.json');
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 100 * 1024 * 1024);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const ALLOWED_ORIGINS = ((process.env.ALLOWED_ORIGINS || '').trim()
+  ? (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+  : ['*']);
 const STORAGE_BACKEND = (process.env.STORAGE_BACKEND || 'file').trim();
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();

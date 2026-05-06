@@ -16,7 +16,8 @@ const STORAGE_KEYS = {
   tokenTransactions: 'ope_token_transactions_v1',
   teacherSession: 'ope_teacher_session_v1',
   students: 'ope_teacher_students_v1',
-  appState: 'ope_app_state_v1'
+  appState: 'ope_app_state_v1',
+  syncApiBaseUrl: 'ope_sync_api_base_url_v1'
 };
 const NETWORK_SYNC_KEYS = [
   STORAGE_KEYS.quizzes,
@@ -57,11 +58,30 @@ function normalizeApiBaseUrl(value) {
   return (value || '').toString().trim().replace(/\/+$/, '');
 }
 
+function readStoredSyncApiBaseUrl() {
+  if (typeof window === 'undefined') return '';
+  try {
+    return normalizeApiBaseUrl(localStorage.getItem(STORAGE_KEYS.syncApiBaseUrl) || '');
+  } catch (error) {
+    return '';
+  }
+}
+
+function readQuerySyncApiBaseUrl() {
+  if (typeof window === 'undefined') return '';
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    return normalizeApiBaseUrl(params.get('syncApiBaseUrl') || params.get('apiBaseUrl') || '');
+  } catch (error) {
+    return '';
+  }
+}
+
 function getNetworkSyncConfig() {
   const rawConfig = typeof window !== 'undefined' && window.OPE_CONFIG && typeof window.OPE_CONFIG === 'object'
     ? window.OPE_CONFIG
     : {};
-  const apiBaseUrl = normalizeApiBaseUrl(rawConfig.apiBaseUrl);
+  const apiBaseUrl = readQuerySyncApiBaseUrl() || readStoredSyncApiBaseUrl() || normalizeApiBaseUrl(rawConfig.apiBaseUrl);
   const pollIntervalMs = Number(rawConfig.syncPollIntervalMs) > 0
     ? Number(rawConfig.syncPollIntervalMs)
     : DEFAULT_NETWORK_SYNC_POLL_MS;
@@ -75,6 +95,41 @@ function buildApiUrl(path) {
   return NETWORK_SYNC_CONFIG.apiBaseUrl
     ? `${NETWORK_SYNC_CONFIG.apiBaseUrl}${normalizedPath}`
     : normalizedPath;
+}
+
+function getCurrentSyncServerBaseUrl() {
+  if (NETWORK_SYNC_CONFIG.apiBaseUrl) return NETWORK_SYNC_CONFIG.apiBaseUrl;
+  if (typeof window !== 'undefined' && /^https?:$/i.test(window.location.protocol || '')) return window.location.origin;
+  return '';
+}
+
+function getCurrentSyncServerLabel() {
+  return getCurrentSyncServerBaseUrl() || 'this app origin';
+}
+
+function setNetworkSyncApiBaseUrl(value) {
+  const normalized = normalizeApiBaseUrl(value);
+  NETWORK_SYNC_CONFIG.apiBaseUrl = normalized;
+  try {
+    if (normalized) localStorage.setItem(STORAGE_KEYS.syncApiBaseUrl, normalized);
+    else localStorage.removeItem(STORAGE_KEYS.syncApiBaseUrl);
+  } catch (error) {}
+  networkSyncReady = false;
+  networkSyncFailed = false;
+  networkSyncFailureMessage = '';
+  lastNetworkPullAt = 0;
+}
+
+async function probeNetworkSyncHealth(apiBaseUrl, options = {}) {
+  const previousApiBaseUrl = NETWORK_SYNC_CONFIG.apiBaseUrl;
+  NETWORK_SYNC_CONFIG.apiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
+  try {
+    return await checkNetworkSyncHealth(options);
+  } finally {
+    if (options.persist !== true) {
+      NETWORK_SYNC_CONFIG.apiBaseUrl = previousApiBaseUrl;
+    }
+  }
 }
 
 function getAppDeviceId() {
@@ -421,6 +476,75 @@ function withTimeout(promise, timeoutMs = DEFAULT_STARTUP_SYNC_TIMEOUT_MS, fallb
   ]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+}
+
+function explainNetworkSyncFailureMessage(message = '') {
+  const text = (message || '').toString().trim();
+  const lower = text.toLowerCase();
+  const target = getCurrentSyncServerLabel();
+  if (!text) return `Could not reach the shared sync server at ${target}.`;
+  if (lower.includes('failed to fetch')) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return `Could not reach the shared sync server at ${target}. This device appears to be offline.`;
+    }
+    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && /^http:\/\//i.test(NETWORK_SYNC_CONFIG.apiBaseUrl || '')) {
+      return `Could not reach the shared sync server at ${target} because this page is HTTPS and the sync server URL is HTTP. Use an HTTPS sync server URL or open the full app from the same HTTP server.`;
+    }
+    return `Could not reach the shared sync server at ${target}. Open Settings > Cloud Sync, confirm the server URL, make sure the OPE Assessor Node server is running, and test ${buildApiUrl('/api/health')}.`;
+  }
+  if (lower.includes('unexpected token') || lower.includes('json')) {
+    return `The address ${target} did not return the expected OPE Assessor API response. Point Cloud Sync to the Node server, not a static file host.`;
+  }
+  if (lower.includes('cors')) {
+    return `The shared sync server at ${target} blocked this browser request. Allow the frontend origin on the server or use the same server URL for both app and API.`;
+  }
+  return text;
+}
+
+async function checkNetworkSyncHealth(options = {}) {
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 5000);
+  if (!canUseNetworkSync()) {
+    return {
+      ok: false,
+      target: getCurrentSyncServerLabel(),
+      message: 'Cloud sync is not available in this browser session.'
+    };
+  }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(buildApiUrl('/api/health'), {
+      cache: 'no-store',
+      signal: controller ? controller.signal : undefined
+    });
+    if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Shared sync server is unavailable'));
+    const payload = await response.json();
+    if (!payload || payload.ok !== true) throw new Error('Shared sync server returned an invalid health response');
+    if (options.captureFailure !== false) {
+      networkSyncFailed = false;
+      networkSyncFailureMessage = '';
+    }
+    return {
+      ok: true,
+      target: getCurrentSyncServerLabel(),
+      payload,
+      message: `Connected to ${getCurrentSyncServerLabel()}`
+    };
+  } catch (error) {
+    const message = explainNetworkSyncFailureMessage(error && error.message ? error.message : 'Network sync unavailable');
+    if (options.captureFailure !== false) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = message;
+    }
+    return {
+      ok: false,
+      target: getCurrentSyncServerLabel(),
+      error,
+      message
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function shouldHydrateSharedStateOnStartup(params = new URLSearchParams()) {
@@ -1187,7 +1311,7 @@ async function pullNetworkState(force = false) {
     })
     .catch((error) => {
       networkSyncFailed = true;
-      networkSyncFailureMessage = error && error.message ? error.message : 'Network sync unavailable';
+      networkSyncFailureMessage = explainNetworkSyncFailureMessage(error && error.message ? error.message : 'Network sync unavailable');
       return false;
     })
     .finally(() => { networkSyncInFlight = null; });
@@ -1223,7 +1347,7 @@ async function pushNetworkValue(key, value, options = {}) {
       return true;
     } catch (err) {
       networkSyncFailed = true;
-      networkSyncFailureMessage = err && err.message ? err.message : 'Failed to save shared state';
+      networkSyncFailureMessage = explainNetworkSyncFailureMessage(err && err.message ? err.message : 'Failed to save shared state');
       markNetworkKeyDirty(key);
       console.error('Network sync save failed for', key, err);
       if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
@@ -1243,12 +1367,12 @@ function isSharedSyncAvailable() {
 
 function getSharedSyncWarningMessage() {
   if (!canUseNetworkSync()) {
-    return 'Saved on this device only. Cloud sync is not available in this browser session.';
+    return 'Saved on this device only. Cloud sync is not available in this browser session. Open Settings > Cloud Sync if this device should connect to a separate OPE Assessor server.';
   }
   if (networkSyncFailureMessage) {
     return `Saved on this device only. Cloud sync failed: ${networkSyncFailureMessage}`;
   }
-  return 'Saved on this device only. Cloud sync is not active on this deployment.';
+  return `Saved on this device only. Cloud sync is not active on this deployment yet. Current target: ${getCurrentSyncServerLabel()}.`;
 }
 
 async function syncSharedKeys(keys = []) {
@@ -1535,6 +1659,8 @@ async function initializeApp() {
   migrateAndNormalizeSubmissions();
   startOverlayBodyLockObserver();
   const params = new URLSearchParams(window.location.search);
+  const querySyncApiBaseUrl = normalizeApiBaseUrl(params.get('syncApiBaseUrl') || params.get('apiBaseUrl') || '');
+  if (querySyncApiBaseUrl) setNetworkSyncApiBaseUrl(querySyncApiBaseUrl);
   const startupSharedChanged = await hydrateSharedStateBeforeFirstRender(params);
   applyPersistedAppUiState();
   if (params.has('q')) {
@@ -3670,8 +3796,8 @@ function renderTeacherQuizzes() {
   const syncButton = canUseNetworkSync()
     ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px"><button id="syncLocalToCloudBtn" class="btn btn-primary btn-sm">Sync To Cloud</button></div>`
     : '';
-  const syncNotice = networkSyncFailed && !networkSyncReady
-    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Fix the backend connection before sending quiz IDs or links to students.</div>`
+  const syncNotice = networkSyncFailed
+    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now.<div style="margin-top:8px;line-height:1.6">${escapeHtml(networkSyncFailureMessage || 'Fix the backend connection before sending quiz IDs or links to students.')}</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button id="openSyncSettingsFromQuizzes" class="btn btn-ghost btn-sm">Cloud Sync Settings</button><button id="testSyncFromQuizzes" class="btn btn-primary btn-sm">Test Connection</button></div></div>`
     : '';
   container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncButton}${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
@@ -3679,6 +3805,17 @@ function renderTeacherQuizzes() {
     if (syncBtn) syncBtn.onclick = async () => {
       if (!confirmTeacherAction('Sync this device to the cloud now? Use this after editing quizzes on this browser.')) return;
       await syncAllLocalDataToCloud();
+    };
+    const openSyncSettingsFromQuizzes = document.getElementById('openSyncSettingsFromQuizzes');
+    if (openSyncSettingsFromQuizzes) openSyncSettingsFromQuizzes.onclick = () => { state.view = 'teacher.settings'; render(); };
+    const testSyncFromQuizzes = document.getElementById('testSyncFromQuizzes');
+    if (testSyncFromQuizzes) testSyncFromQuizzes.onclick = async () => {
+      const health = await checkNetworkSyncHealth({ timeoutMs: 5000 });
+      if (health.ok) {
+        await runSharedSyncCycle({ forcePull: true, forceRender: true });
+      }
+      showNotification(health.ok ? 'Cloud sync server is reachable' : health.message, health.ok ? 'success' : 'error', 9000);
+      render();
     };
     const all = getAllQuizzes();
     const keys = Object.keys(all).filter(k => normalizeEmail(all[k].teacherId) === normalizeEmail(state.teacherId)).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
@@ -4100,8 +4237,20 @@ function renderSettingsView() {
         <button id="downloadBackup" class="btn btn-primary" style="margin-top:12px">Download Backup</button>
       </div>
       <div class="card">
+        <div class="h3">Cloud Sync</div>
+        <div class="small">All devices must reach the same OPE Assessor Node server for teacher accounts, licenses, quizzes, and results to sync.</div>
+        <label class="small" style="display:block;margin-top:12px">Sync server URL</label>
+        <input id="syncApiBaseUrlInput" class="input-beautiful" value="${escapeHtml(NETWORK_SYNC_CONFIG.apiBaseUrl || '')}" placeholder="Leave blank for this same site, or enter https://example.com" />
+        <div class="small" id="syncServerStatusText" style="margin-top:10px;line-height:1.7">Current target: <strong>${escapeHtml(getCurrentSyncServerLabel())}</strong><br/>Leave this blank only when this app and the API are opened from the same server address.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button id="saveSyncServerBtn" class="btn btn-primary">Save Sync Server</button>
+          <button id="testSyncServerBtn" class="btn btn-ghost">Test Connection</button>
+          <button id="useThisSiteForSyncBtn" class="btn btn-ghost">Use This Site</button>
+        </div>
+      </div>
+      <div class="card">
         <div class="h3">Local Network</div>
-        <div class="small">Show instructions for sharing this app on a local Wi-Fi network.</div>
+        <div class="small">Show instructions for running the real app server on one computer and opening that same server from other devices on the same Wi-Fi.</div>
         <button id="openNetworkGuide" class="btn btn-ghost" style="margin-top:12px">Find IP Guide</button>
       </div>
       ${isSuperAdmin() ? `
@@ -4191,6 +4340,50 @@ function renderSettingsView() {
         URL.revokeObjectURL(url);
       }
       showNotification('Backup downloaded', 'success');
+    };
+    const syncApiBaseUrlInput = document.getElementById('syncApiBaseUrlInput');
+    const syncServerStatusText = document.getElementById('syncServerStatusText');
+    const renderSyncServerStatus = (status) => {
+      if (!syncServerStatusText) return;
+      const currentTarget = status && status.target ? status.target : getCurrentSyncServerLabel();
+      const currentMessage = status && status.message
+        ? escapeHtml(status.message)
+        : escapeHtml(networkSyncFailureMessage || (networkSyncReady ? `Connected to ${currentTarget}` : `Current target: ${currentTarget}`));
+      syncServerStatusText.innerHTML = `Current target: <strong>${escapeHtml(currentTarget)}</strong><br/>${currentMessage}`;
+    };
+    renderSyncServerStatus();
+    const saveSyncServer = async (nextValue, options = {}) => {
+      setNetworkSyncApiBaseUrl(nextValue);
+      if (syncApiBaseUrlInput) syncApiBaseUrlInput.value = NETWORK_SYNC_CONFIG.apiBaseUrl || '';
+      const health = await checkNetworkSyncHealth({ timeoutMs: 5000 });
+      renderSyncServerStatus(health);
+      if (health.ok) {
+        await runSharedSyncCycle({ forcePull: true, forceRender: true });
+        if (options.showNotification !== false) showNotification('Cloud sync server saved and connected', 'success', 6000);
+      } else if (options.showNotification !== false) {
+        showNotification(`Cloud sync server saved, but the connection test failed. ${health.message}`, 'warning', 9000);
+      }
+    };
+    const saveSyncServerBtn = document.getElementById('saveSyncServerBtn');
+    if (saveSyncServerBtn) saveSyncServerBtn.onclick = async () => {
+      await saveSyncServer(syncApiBaseUrlInput ? syncApiBaseUrlInput.value : '');
+    };
+    const testSyncServerBtn = document.getElementById('testSyncServerBtn');
+    if (testSyncServerBtn) testSyncServerBtn.onclick = async () => {
+      const health = await probeNetworkSyncHealth(syncApiBaseUrlInput ? syncApiBaseUrlInput.value : '', { timeoutMs: 5000, captureFailure: false });
+      if (!health.ok) {
+        networkSyncFailed = true;
+        networkSyncFailureMessage = health.message;
+      } else {
+        networkSyncFailed = false;
+        networkSyncFailureMessage = '';
+      }
+      renderSyncServerStatus(health);
+      showNotification(health.ok ? 'Cloud sync server is reachable' : health.message, health.ok ? 'success' : 'error', 9000);
+    };
+    const useThisSiteForSyncBtn = document.getElementById('useThisSiteForSyncBtn');
+    if (useThisSiteForSyncBtn) useThisSiteForSyncBtn.onclick = async () => {
+      await saveSyncServer('', { showNotification: true });
     };
     document.getElementById('openNetworkGuide').onclick = () => showLocalNetworkGuide();
     const search = document.getElementById('teacherSearch');
@@ -9982,13 +10175,14 @@ function showLocalNetworkGuide() {
   m = document.createElement('div'); m.id='localNetGuide'; m.style.position='fixed'; m.style.inset='0'; m.style.zIndex=20000; m.style.background='rgba(0,0,0,0.4)';
   const inner = document.createElement('div'); inner.className='card-beautiful p-6'; inner.style.width='720px'; inner.style.maxWidth='94%';
   inner.innerHTML = `
-    <h3>How to find your computer's IP (local network)</h3>
-    <p class="small">Students on the same Wi Fi can open a browser and visit <strong>http://YOUR_IP:8000</strong> after you run a simple local server. Steps:</p>
+    <h3>Local Network + Cloud Sync Setup</h3>
+    <p class="small">For teachers, licenses, quizzes, and results to sync across devices, every device must reach the same OPE Assessor Node server. Current sync target: <strong>${escapeHtml(getCurrentSyncServerLabel())}</strong>.</p>
     <ol class="small">
       <li>On Windows: open Command Prompt and run <code>ipconfig</code>. Look for "IPv4 Address" under your active adapter.</li>
       <li>On macOS / Linux: run <code>ifconfig</code> or <code>ip addr</code> in Terminal and find the active interface's address (usually 192.168.x.x).</li>
-      <li>Start a simple server in your quiz folder, e.g. <code>python -m http.server 8000</code>.</li>
-      <li>Share the address: <code>http://192.168.x.y:8000</code> with students on the same Wi Fi.</li>
+      <li>Start the real OPE Assessor server in this project folder with <code>npm start</code>. Do not use <code>python -m http.server</code> for shared sync because that serves files only and does not provide the <code>/api</code> endpoints.</li>
+      <li>Share the address shown by the server, for example <code>http://192.168.x.y:3015</code>, and open that same address on every teacher and student device.</li>
+      <li>If your frontend is hosted somewhere else, open <strong>Settings &gt; Cloud Sync</strong> on each device and enter the Node server URL there, then test <code>${escapeHtml(buildApiUrl('/api/health'))}</code>.</li>
     </ol>
     <div style="display:flex;justify-content:flex-end;margin-top:12px"><button id="closeNetGuide" class="btn-pastel-secondary">Close</button></div>
   `;

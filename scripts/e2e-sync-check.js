@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer-core');
 
 const EDGE_PATH = process.env.BROWSER_PATH || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const BASE_URL = (process.argv[2] || process.env.E2E_BASE_URL || 'http://127.0.0.1:3020').replace(/\/+$/, '');
+const SYNC_API_BASE_URL = (process.argv[3] || process.env.E2E_SYNC_API_BASE_URL || '').trim().replace(/\/+$/, '');
 const RUN_ID = Date.now().toString(36);
 const TEACHER_ID = `teacher.${RUN_ID}@example.com`;
 const TEACHER_PASSWORD = `SyncPass!${RUN_ID}`;
@@ -9,7 +10,11 @@ const QUIZ_ID = `E2E${RUN_ID.slice(-6).toUpperCase()}`;
 const QUIZ_TITLE = `E2E Sync Quiz ${RUN_ID}`;
 
 function withQuery(label) {
-  return `${BASE_URL}/?e2e=${encodeURIComponent(RUN_ID)}&ctx=${encodeURIComponent(label)}`;
+  const target = new URL(`${BASE_URL}/`);
+  target.searchParams.set('e2e', RUN_ID);
+  target.searchParams.set('ctx', label);
+  if (SYNC_API_BASE_URL) target.searchParams.set('syncApiBaseUrl', SYNC_API_BASE_URL);
+  return target.toString();
 }
 
 async function createPage(context, label) {
@@ -221,6 +226,8 @@ async function main() {
     const summary = {
       ok: failures.length === 0,
       runId: RUN_ID,
+      baseUrl: BASE_URL,
+      syncApiBaseUrl: SYNC_API_BASE_URL || null,
       teacherId: TEACHER_ID,
       quizId: QUIZ_ID,
       grantResult,
