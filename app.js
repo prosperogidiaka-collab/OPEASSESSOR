@@ -3806,7 +3806,7 @@ function renderSettingsView() {
         row.style.display = normalizeEmail(row.dataset.teacherRow).includes(term) ? '' : 'none';
       });
     };
-    document.querySelectorAll('.btnApplyTeacherAdminAction').forEach(btn => btn.onclick = (ev) => {
+    document.querySelectorAll('.btnApplyTeacherAdminAction').forEach(btn => btn.onclick = async (ev) => {
       if (!isSuperAdmin()) return;
       const actionSelect = ev.currentTarget.parentElement.querySelector('.teacherAdminActionSelect');
       const action = actionSelect ? actionSelect.value : '';
@@ -3863,7 +3863,8 @@ function renderSettingsView() {
         all[id].tokenRequestedTokens = 0;
         all[id].tokenRequestedDeviceId = '';
         saveAllTeachers(all);
-        showNotification('Token package granted', 'success');
+        const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers, STORAGE_KEYS.tokenTransactions]);
+        showNotification(sharedSyncOk ? 'Token package granted' : `Token package granted locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
         render();
       } else if (action === 'transfer-unlimited-device') {
         if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin access does not need device transfer', 'info');
@@ -3889,7 +3890,8 @@ function renderSettingsView() {
           deviceId: nextDeviceId,
           createdAt: now
         }));
-        showNotification('Unlimited device transferred', 'success');
+        const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers, STORAGE_KEYS.tokenTransactions]);
+        showNotification(sharedSyncOk ? 'Unlimited device transferred' : `Unlimited device transferred locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
         render();
       } else if (action === 'stop-license') {
         if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin unlimited access cannot be cleared', 'info');
@@ -3908,7 +3910,8 @@ function renderSettingsView() {
           userId: id,
           createdAt: now
         }));
-        showNotification('Unlimited access cleared', 'success');
+        const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers, STORAGE_KEYS.tokenTransactions]);
+        showNotification(sharedSyncOk ? 'Unlimited access cleared' : `Unlimited access cleared locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
         render();
       } else if (action === 'reset-password') {
         const next = prompt('Enter new password for ' + id);
@@ -3920,7 +3923,8 @@ function renderSettingsView() {
         all[id].passwordResetAt = new Date().toISOString();
         all[id].updatedAt = all[id].passwordResetAt;
         saveAllTeachers(all);
-        showNotification('Password reset', 'success');
+        const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers]);
+        showNotification(sharedSyncOk ? 'Password reset' : `Password reset locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
       } else if (action === 'change-id') {
         if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin email ID cannot be changed here', 'info');
         const newId = normalizeEmail(prompt('Enter new teacher email ID for ' + id) || '');
@@ -3934,7 +3938,8 @@ function renderSettingsView() {
           phone: teacher.phone || teacher.phoneNumber || ''
         });
         if (!result.ok) return showNotification(result.message || 'Could not change teacher ID', 'error');
-        showNotification('Teacher ID changed', 'success');
+        const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers, STORAGE_KEYS.students, STORAGE_KEYS.quizzes]);
+        showNotification(sharedSyncOk ? 'Teacher ID changed' : `Teacher ID changed locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
         render();
       }
       if (actionSelect) actionSelect.value = '';
@@ -7707,7 +7712,7 @@ function renderResultsView() {
           const item = breakdown.find((entry) => normalizeSubjectName(entry.name) === normalizeSubjectName(subjectName));
           return item ? `${formatScoreValue(item.score)}/${formatScoreValue(item.totalMarks || item.total)}` : '';
         });
-        data.push([s.name, s.email, s.facility || q.facility || '', ...subjectScores, `${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}`, `${getSubmissionAveragePercent(s, q)}%`, `${s.percent || 0}%`, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), getSubmissionIpAddress(s), (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
+        data.push([s.name, s.email, s.facility || q.facility || '', ...subjectScores, `${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}`, `${getSubmissionAveragePercent(s, q)}%`, `${s.percent || 0}%`, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), getSubmissionIpAddress(s) || 'Not captured', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
       });
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(data);
@@ -7757,7 +7762,7 @@ function renderResultsView() {
               <td class="text-right">${getSubmissionAveragePercent(s, q)}%</td>
               <td class="text-right">${s.percent}%</td>
               <td class="text-right">${escapeHtml(s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'))}</td>
-              <td class="text-right">${escapeHtml(getSubmissionIpAddress(s))}</td>
+              <td class="text-right">${escapeHtml(getSubmissionIpAddress(s) || 'Not captured')}</td>
               <td class="text-right">${(s.monitoring && s.monitoring.tabSwitches) || 0}</td>
               <td class="text-right">${Math.floor((s.timeSpent||0) / 60)}m</td>
               <td class="text-right">${ranks[normalizeEmail(s.email)] || ''}</td>
