@@ -207,16 +207,25 @@ function persistAppUiState() {
 function applyPersistedAppUiState() {
   const stored = readLocalStorageValue(STORAGE_KEYS.appState);
   if (!stored || typeof stored !== 'object') return false;
-  if (stored.view && stored.view !== 'take') state.view = stored.view;
+  const requestedView = stored.view && stored.view !== 'take' ? stored.view : state.view;
+  if (requestedView) state.view = requestedView;
   state.teacherGuideTopic = stored.teacherGuideTopic || '';
   state.prefillQuizCode = stored.prefillQuizCode || '';
   if (stored.quizId) {
     state.currentQuiz = getAllQuizzes()[stored.quizId] || null;
-    if (!state.currentQuiz && (state.view === 'results' || state.view === 'teacher.results')) {
+  }
+  if ((state.view || '').startsWith('teacher') && !isTeacherLoggedIn()) {
+    state.currentQuiz = null;
+    state.view = 'teacher.login';
+  } else if (state.view === 'results' || state.view === 'teacher.results') {
+    if (!state.currentQuiz) {
       state.view = isTeacherLoggedIn() ? 'teacher.quizzes' : 'home';
+    } else if (!canCurrentTeacherAccessQuiz(state.currentQuiz)) {
+      state.currentQuiz = null;
+      state.view = isSuperAdmin() ? 'teacher' : 'teacher.quizzes';
     }
   }
-  _pendingScrollRestore = stored.scroll || null;
+  _pendingScrollRestore = requestedView === state.view ? (stored.scroll || null) : null;
   return true;
 }
 
@@ -300,7 +309,7 @@ function isEmptySharedValue(value) {
 }
 
 function getRecordStamp(item) {
-  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
+  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.shareKeyUpdatedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
   const stamp = raw ? new Date(raw).getTime() : 0;
   return Number.isFinite(stamp) ? stamp : 0;
 }
@@ -310,6 +319,56 @@ function buildSubmissionIdentity(item, index = 0) {
   const email = (item?.email || '').toString().trim().toLowerCase();
   const stamp = item?.submittedAt || item?.startedAt || item?.createdAt || `idx-${index}`;
   return item?.submissionId || `${quizId}::${email}::${stamp}`;
+}
+
+function hashText(value = '') {
+  let hash = 2166136261;
+  const text = (value || '').toString();
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildSubmissionShareKeyCandidate(submission, salt = 0) {
+  const identity = submission?.submissionId || buildSubmissionIdentity(submission);
+  const hashPart = hashText(`${identity}|${salt}`).toString(36).slice(0, 6);
+  const stampPart = (getRecordStamp(submission) || Date.now()).toString(36).slice(-4);
+  return `${hashPart}${stampPart}`.toLowerCase();
+}
+
+function getSubmissionShareKey(submission, options = {}) {
+  const persist = options.persist !== false;
+  if (!submission || typeof submission !== 'object') return '';
+  if (submission.shareKey) return submission.shareKey;
+  const identity = submission.submissionId || buildSubmissionIdentity(submission);
+  const existingKeys = new Set(
+    getAllSubmissions({ includeDeleted: true })
+      .filter((item) => (item.submissionId || buildSubmissionIdentity(item)) !== identity)
+      .map((item) => item.shareKey)
+      .filter(Boolean)
+  );
+  let attempt = 0;
+  let shareKey = buildSubmissionShareKeyCandidate(submission, attempt);
+  while (existingKeys.has(shareKey) && attempt < 64) {
+    attempt += 1;
+    shareKey = buildSubmissionShareKeyCandidate(submission, attempt);
+  }
+  submission.shareKey = shareKey;
+  submission.shareKeyUpdatedAt = new Date().toISOString();
+  if (!persist) return shareKey;
+  const all = getAllSubmissions({ includeDeleted: true });
+  const index = all.findIndex((item) => (item.submissionId || buildSubmissionIdentity(item)) === identity);
+  if (index >= 0) {
+    all[index] = {
+      ...all[index],
+      shareKey,
+      shareKeyUpdatedAt: submission.shareKeyUpdatedAt
+    };
+    save(STORAGE_KEYS.submissions, all);
+  }
+  return shareKey;
 }
 
 function isDeletedSubmission(item) {
@@ -441,6 +500,12 @@ function getTeacherById(teacherId = '') {
   return getAllTeachers()[normalizeEmail(teacherId)] || null;
 }
 
+function canCurrentTeacherAccessQuiz(quiz = state.currentQuiz) {
+  if (!quiz || typeof quiz !== 'object') return false;
+  if (isSuperAdmin()) return true;
+  return !!state.teacherId && normalizeEmail(quiz.teacherId) === normalizeEmail(state.teacherId);
+}
+
 function getQuizEffectiveEndTime(quiz) {
   if (!quiz) return 0;
   const scheduleEndTime = quiz.scheduleEnd ? new Date(quiz.scheduleEnd).getTime() : 0;
@@ -513,19 +578,30 @@ function getQuestionSubjectLabel(question = {}) {
 function buildCorrectionShareLinksText(quiz, submission) {
   const resultUrl = buildCertificateVerificationUrl(quiz, submission);
   const correctionUrl = buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true });
-  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission).filter((item) => item.total > 0);
-  const subjectLines = breakdown.length > 1
-    ? breakdown.map((item) => `- ${item.name}: ${buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true, correctionSubject: item.name })}`).join('\n')
-    : '';
-  return `Result link: ${resultUrl}\nCorrection PDF: ${correctionUrl}${subjectLines ? `\nSubject PDFs:\n${subjectLines}` : ''}\n`;
+  return [
+    'Result Summary',
+    resultUrl,
+    '',
+    'Correction PDF',
+    correctionUrl
+  ].join('\n');
 }
 
 function buildCorrectionShareMessage(submission, quiz) {
-  const subjectLinks = buildCorrectionShareLinksText(quiz, submission);
   const requestLine = submission.correctionRequested
-    ? `Requested at: ${submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'N/A'}\n`
+    ? `Requested at: ${submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'N/A'}`
     : '';
-  return `Hi ${submission.name || 'Student'},\n\nYour correction for ${quiz.title || submission.quizId} is ready.\n${requestLine}${subjectLinks}\nRegards,\n${getTeacherSignatureLabel(quiz?.teacherId || state.teacherId)}`;
+  return [
+    `Hi ${submission.name || 'Student'},`,
+    '',
+    `Your correction for ${quiz.title || submission.quizId} is ready.`,
+    requestLine,
+    '',
+    buildCorrectionShareLinksText(quiz, submission),
+    '',
+    'Regards,',
+    getTeacherSignatureLabel(quiz?.teacherId || state.teacherId)
+  ].filter(Boolean).join('\n');
 }
 
 function formatCorrectionActivityStamp(timestamp = '') {
@@ -902,7 +978,7 @@ async function shareQuizAccessLink(quiz) {
 }
 
 async function deleteQuizById(quizId, options = {}) {
-  const quizzes = getAllQuizzes();
+  const quizzes = getAllQuizzes({ includeDeleted: true });
   const quiz = quizzes[quizId];
   if (!quiz) {
     showNotification('Quiz not found', 'error');
@@ -913,16 +989,22 @@ async function deleteQuizById(quizId, options = {}) {
     ? `Delete "${quiz.title || quiz.id}" and remove its ${visibleSubmissionCount} submission(s)? This cannot be undone.`
     : `Delete "${quiz.title || quiz.id}" now? This cannot be undone.`;
   if (!confirmTeacherAction(message)) return false;
-  delete quizzes[quizId];
+  const deletedAt = new Date().toISOString();
+  quizzes[quizId] = {
+    ...quiz,
+    deletedAt,
+    deletedBy: state.teacherId || 'teacher',
+    updatedAt: deletedAt
+  };
   saveAllQuizzes(quizzes);
 
   const submissions = getAllSubmissions({ includeDeleted: true });
   let changedSubmissions = false;
   submissions.forEach((item) => {
     if (item.quizId !== quizId || isDeletedSubmission(item)) return;
-    item.deletedAt = new Date().toISOString();
+    item.deletedAt = deletedAt;
     item.deletedBy = state.teacherId || 'teacher';
-    item.updatedAt = item.deletedAt;
+    item.updatedAt = deletedAt;
     changedSubmissions = true;
   });
   if (changedSubmissions) save(STORAGE_KEYS.submissions, submissions);
@@ -1005,12 +1087,13 @@ async function initializeApp() {
       state.view = 'take';
     }
   }
-  if (params.has('resultQuiz') && params.has('resultKey')) {
+  if (params.has('r') || (params.has('resultQuiz') && params.has('resultKey'))) {
     state.pendingResultLookup = {
+      shareKey: params.get('r') || '',
       quizId: params.get('resultQuiz') || '',
       submissionId: params.get('resultKey') || '',
-      downloadCorrection: ['1', 'true', 'yes'].includes((params.get('downloadCorrection') || '').toLowerCase()),
-      correctionSubject: params.get('correctionSubject') || ''
+      downloadCorrection: ['1', 'true', 'yes'].includes(((params.get('c') || params.get('downloadCorrection') || '')).toLowerCase()),
+      correctionSubject: params.get('s') || params.get('correctionSubject') || ''
     };
     state.view = 'student';
   }
@@ -1433,8 +1516,23 @@ function migrateAndNormalizeSubmissions() {
   try {
     const subs = getAllSubmissions({ includeDeleted: true }) || [];
     const map = {};
+    const usedShareKeys = new Set();
+    let mutated = false;
     for (const rawSubmission of subs) {
-      const s = rawSubmission && rawSubmission.submissionId ? rawSubmission : { ...rawSubmission, submissionId: buildSubmissionIdentity(rawSubmission) };
+      const s = rawSubmission && rawSubmission.submissionId ? { ...rawSubmission } : { ...rawSubmission, submissionId: buildSubmissionIdentity(rawSubmission) };
+      if (!(rawSubmission && rawSubmission.submissionId)) mutated = true;
+      let shareKey = (s.shareKey || '').toString().trim().toLowerCase();
+      if (!shareKey || usedShareKeys.has(shareKey)) {
+        let attempt = 0;
+        do {
+          shareKey = buildSubmissionShareKeyCandidate(s, attempt);
+          attempt += 1;
+        } while (usedShareKeys.has(shareKey) && attempt < 64);
+        s.shareKey = shareKey;
+        s.shareKeyUpdatedAt = s.shareKeyUpdatedAt || new Date().toISOString();
+        mutated = true;
+      }
+      usedShareKeys.add(shareKey);
       const key = s.submissionId;
       if (!map[key]) map[key] = s;
       else {
@@ -1446,7 +1544,7 @@ function migrateAndNormalizeSubmissions() {
       }
     }
     const out = Object.values(map).sort(sortSubmissionRecords);
-    if (JSON.stringify(out) !== JSON.stringify(subs)) save(STORAGE_KEYS.submissions, out);
+    if (mutated || JSON.stringify(out) !== JSON.stringify(subs)) save(STORAGE_KEYS.submissions, out);
   } catch (e) { console.warn('Migration error', e); }
 }
 
@@ -1956,6 +2054,17 @@ function render() {
   } else if (state.view === 'take') {
     main.appendChild(renderQuizTake());
   } else if (state.view === 'results' || state.view === 'teacher.results') {
+    if (!requireTeacher()) return render();
+    if (!state.currentQuiz) {
+      state.view = isSuperAdmin() ? 'teacher' : 'teacher.quizzes';
+      return render();
+    }
+    if (!canCurrentTeacherAccessQuiz(state.currentQuiz)) {
+      state.currentQuiz = null;
+      state.view = isSuperAdmin() ? 'teacher' : 'teacher.quizzes';
+      showNotification('Access denied: this quiz belongs to another teacher', 'error');
+      return render();
+    }
     main.appendChild(renderResultsView());
   } else {
     // fallback: existing views
@@ -2020,10 +2129,15 @@ function render() {
       state.pendingResultLookup = null;
       setTimeout(async () => {
         if (canUseNetworkSync()) await pullNetworkState(true);
-        showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, false, {
+        const openOptions = {
           autoDownloadCorrection: pending.downloadCorrection,
           correctionSubject: pending.correctionSubject || ''
-        });
+        };
+        if (pending.shareKey) {
+          showStudentResultModalByShareKey(pending.shareKey, false, openOptions);
+        } else {
+          showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, false, openOptions);
+        }
       }, 50);
     }
     const sameViewRerender = previousRenderedView && previousRenderedView === state.view;
@@ -4476,11 +4590,83 @@ function downloadPdfFromHtml(html, filename, successMessage = 'PDF downloaded', 
   });
   document.body.appendChild(source);
   return exportElementToPDF({ sourceSelector: `#${sourceId}`, filename, ...exportOptions })
-    .then(() => { source.remove(); showNotification(successMessage, 'success'); return true; })
+    .then(() => { source.remove(); if (successMessage) showNotification(successMessage, 'success'); return true; })
     .catch(err => {
       source.remove();
       showNotification('Error generating PDF', 'error');
       throw err;
+    });
+}
+
+function downloadPagedPdfFromHtml(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
+  const sourceId = 'paged-pdf-content-source';
+  const scale = Math.max(1.5, Number(exportOptions.scale) || 2.4);
+  const contentWidthMm = Math.max(120, Number(exportOptions.contentWidthMm) || 180);
+  const marginsMm = exportOptions.marginsMm || { top: 18, right: 15, bottom: 18, left: 15 };
+  const avoid = Array.isArray(exportOptions.pagebreakAvoid) && exportOptions.pagebreakAvoid.length
+    ? exportOptions.pagebreakAvoid
+    : ['.avoid-break', '.pdf-section-card', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card'];
+  let source = document.getElementById(sourceId);
+  if (source) source.remove();
+  source = document.createElement('div');
+  source.id = sourceId;
+  source.innerHTML = html;
+  Object.assign(source.style, {
+    position: 'absolute',
+    left: '-100000px',
+    top: '0',
+    width: `${contentWidthMm}mm`,
+    minWidth: `${contentWidthMm}mm`,
+    maxWidth: `${contentWidthMm}mm`,
+    background: '#ffffff',
+    overflow: 'visible'
+  });
+  document.body.appendChild(source);
+  if (typeof html2pdf === 'undefined') {
+    return downloadPdfFromHtml(html, filename, successMessage, exportOptions)
+      .finally(() => { if (source && source.parentNode) source.remove(); });
+  }
+  return Promise.resolve()
+    .then(async () => {
+      await waitForNextPaint();
+      await waitForNextPaint();
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      await waitForImages(source);
+      return html2pdf().set({
+        margin: [marginsMm.top, marginsMm.left, marginsMm.bottom, marginsMm.right],
+        filename,
+        image: { type: 'jpeg', quality: 1 },
+        html2canvas: {
+          scale,
+          useCORS: true,
+          allowTaint: false,
+          backgroundColor: '#ffffff',
+          logging: false,
+          windowWidth: Math.max(Math.ceil(source.scrollWidth), 1200),
+          scrollX: 0,
+          scrollY: 0
+        },
+        jsPDF: {
+          unit: 'mm',
+          format: 'a4',
+          orientation: 'portrait',
+          compress: true
+        },
+        pagebreak: {
+          mode: ['css', 'legacy'],
+          avoid
+        }
+      }).from(source).save();
+    })
+    .then(() => {
+      if (source && source.parentNode) source.remove();
+      if (successMessage) showNotification(successMessage, 'success');
+      return true;
+    })
+    .catch((error) => {
+      if (source && source.parentNode) source.remove();
+      showNotification('Error generating PDF', 'error');
+      throw error;
     });
 }
 
@@ -4505,7 +4691,8 @@ async function renderElementToCanvas({
   title = '',
   paddingPx = 24,
   debug = false,
-  sourceWidthPx = 794
+  sourceWidthPx = 794,
+  scale = 2
 }) {
   const source = document.querySelector(sourceSelector);
   if (!source) throw new Error(`Export source not found: ${sourceSelector}`);
@@ -4622,7 +4809,7 @@ async function renderElementToCanvas({
       console.log('Export root height:', exportHeight);
     }
     const canvas = await html2canvas(tempRoot, {
-      scale: 2,
+      scale: Math.max(1, Number(scale) || 2),
       useCORS: true,
       allowTaint: false,
       backgroundColor: '#ffffff',
@@ -4656,11 +4843,12 @@ async function exportElementToPDF({
   marginMm = 10,
   singlePage = false,
   debug = false,
-  sourceWidthPx = 794
+  sourceWidthPx = 794,
+  renderScale = 2
 }) {
   if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF is not loaded.');
   try {
-    const canvas = await renderElementToCanvas({ sourceSelector, title, paddingPx, debug, sourceWidthPx });
+    const canvas = await renderElementToCanvas({ sourceSelector, title, paddingPx, debug, sourceWidthPx, scale: renderScale });
     const imgData = canvas.toDataURL('image/png');
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ orientation, unit: 'mm', format: 'a4', compress: true });
@@ -4846,6 +5034,46 @@ function optionText(question, letter) {
   return (question.options || [])[idx] || letter || '';
 }
 
+function toSuperscriptText(value = '') {
+  const map = {
+    '0': '⁰',
+    '1': '¹',
+    '2': '²',
+    '3': '³',
+    '4': '⁴',
+    '5': '⁵',
+    '6': '⁶',
+    '7': '⁷',
+    '8': '⁸',
+    '9': '⁹',
+    '-': '⁻',
+    '−': '⁻',
+    '+': '⁺'
+  };
+  return (value || '').toString().split('').map((char) => map[char] || char).join('');
+}
+
+function sanitizeScientificText(value = '') {
+  let text = (value || '').toString();
+  text = text.replace(/\u00A0/g, ' ');
+  text = text.replace(/©/g, 'Ω');
+  text = text.replace(/¼F/gi, 'µF');
+  text = text.replace(/μ/g, 'µ');
+  text = text.replace(/uF\b/g, 'µF');
+  text = text.replace(/([0-9])\s*[xX]\s*10\s*(?:\^|\{)\s*([+\-−]?\d+)/g, (_, base, exponent) => `${base} × 10${toSuperscriptText(exponent)}`);
+  text = text.replace(/10\s*(?:\^|\{)\s*([+\-−]?\d+)/g, (_, exponent) => `10${toSuperscriptText(exponent)}`);
+  text = text.replace(/\bdeg\s*C\b/gi, '°C');
+  return text;
+}
+
+function getDisplayOptionText(question, letter) {
+  return sanitizeScientificText(optionText(question, letter));
+}
+
+function getSanitizedQuestionOptions(question = {}) {
+  return (question.options || []).map((option) => sanitizeScientificText(option || ''));
+}
+
 function buildCorrectionPdfHtml(submission, quiz, opts = {}) {
   const showNegativePenalty = !!opts.showNegativePenalty;
   const questions = submission.allQuestions || [];
@@ -4904,209 +5132,168 @@ function buildCorrectionQuestionEntries(submission, opts = {}) {
   };
 }
 
-function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
-  if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF is not loaded.');
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 10;
-  const usableWidth = pageWidth - margin * 2;
+function buildPdfOptionListHtml(question = {}, options = {}) {
+  const selectedAnswer = (options.selectedAnswer || '').toString().trim().toUpperCase();
+  const correctAnswer = (options.correctAnswer || question.answer || '').toString().trim().toUpperCase();
+  const optionRows = getSanitizedQuestionOptions(question).map((option, index) => {
+    const letter = String.fromCharCode(65 + index);
+    const stateClasses = [
+      letter === correctAnswer ? 'is-correct' : '',
+      selectedAnswer && letter === selectedAnswer ? 'is-selected' : ''
+    ].filter(Boolean).join(' ');
+    return `
+      <div class="pdf-option-row ${stateClasses}">
+        <span class="pdf-option-letter">${letter}.</span>
+        <span class="pdf-option-text">${escapeHtml(option)}</span>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="pdf-option-list">
+      ${optionRows || '<div class="pdf-option-row"><span class="pdf-option-text">No options provided.</span></div>'}
+    </div>
+  `;
+}
+
+function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
-  const questions = correctionView.entries.slice();
+  const entries = correctionView.entries.slice();
   const resolvedSubjectName = correctionView.subjectName;
-  const allBreakdown = computeSubmissionSubjectBreakdown(quiz, submission);
-  const topicBreakdown = computeSubmissionTopicBreakdown(quiz, submission);
-  const lineHeight = 6;
-  let y = margin;
+  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const subjectSummary = resolvedSubjectName
+    ? (breakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || null)
+    : null;
+  const displayScore = subjectSummary ? subjectSummary.score : (submission.score || 0);
+  const displayTotalMarks = subjectSummary ? subjectSummary.totalMarks : getSubmissionTotalMarks(submission, quiz);
+  const displayPercent = subjectSummary ? subjectSummary.percent : (submission.percent || 0);
+  const displayCorrect = subjectSummary ? subjectSummary.correct : (submission.correctCount || 0);
+  const displayAttempted = subjectSummary ? subjectSummary.attempted : (submission.attemptedCount || 0);
+  const displayWrong = subjectSummary ? subjectSummary.wrong : (submission.wrongCount || 0);
+  const metaCards = [
+    { label: 'Student', value: submission.name || 'Student' },
+    { label: 'Email / ID', value: submission.email || submission.registrationNo || '' },
+    { label: 'Quiz', value: quiz.title || submission.quizId || 'Quiz' },
+    { label: 'Submitted', value: submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'N/A' },
+    { label: 'Score', value: `${formatScoreValue(displayScore)} / ${formatScoreValue(displayTotalMarks)}` },
+    { label: 'Percent', value: `${displayPercent || 0}%` },
+    { label: 'Correct', value: `${displayCorrect || 0}` },
+    { label: 'Attempted', value: `${displayAttempted || 0}` }
+  ];
+  if (opts.showNegativePenalty) metaCards.push({ label: 'Negative Penalty', value: formatScoreValue(submission.negativePenalty || 0) });
+  const questionCards = entries.map((entry) => {
+    const question = entry.question || {};
+    const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
+    const correct = (question.answer || '').toString().toUpperCase();
+    const statusText = chosen && chosen === correct ? 'Correct' : 'Incorrect';
+    const topic = sanitizeScientificText(question.topic || entry.subject || 'General');
+    const keyConcept = sanitizeScientificText(question.keyConcept || question.topic || entry.subject || 'General');
+    const explanation = sanitizeScientificText(question.explanation || 'No explanation provided yet.');
+    const learningPoint = sanitizeScientificText(question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.');
+    const studentAnswerText = chosen ? `${chosen}. ${getDisplayOptionText(question, chosen)}` : 'No answer';
+    const correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
+    return `
+      <section class="pdf-question-card ${statusText === 'Correct' ? 'status-correct' : 'status-incorrect'} avoid-break">
+        <div class="pdf-question-head">
+          <div class="pdf-question-number">Question ${entry.originalIndex + 1}</div>
+          <div class="pdf-question-status">${statusText}</div>
+        </div>
+        <div class="pdf-question-text">${escapeHtml(sanitizeScientificText(question.question || ''))}</div>
+        <div class="pdf-meta-line"><strong>Status:</strong> ${escapeHtml(statusText)}</div>
+        <div class="pdf-meta-line"><strong>Key concept:</strong> ${escapeHtml(keyConcept)}</div>
+        ${breakdown.length > 1 ? `<div class="pdf-meta-line"><strong>Subject:</strong> ${escapeHtml(sanitizeScientificText(entry.subject || 'General'))}</div>` : ''}
+        <div class="pdf-meta-line"><strong>Options:</strong></div>
+        ${buildPdfOptionListHtml(question, { selectedAnswer: chosen, correctAnswer: correct })}
+        <div class="pdf-meta-line"><strong>Student answer:</strong> ${escapeHtml(studentAnswerText)}</div>
+        <div class="pdf-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
+        <div class="pdf-meta-line"><strong>Topic:</strong> ${escapeHtml(topic)}</div>
+        <div class="pdf-meta-line pdf-writeup"><strong>Explanation:</strong> ${escapeHtml(explanation)}</div>
+        <div class="pdf-meta-line pdf-writeup"><strong>Learning point:</strong> ${escapeHtml(learningPoint)}</div>
+      </section>
+    `;
+  }).join('');
 
-  const ensureSpace = (needed = 12) => {
-    if (y + needed <= pageHeight - margin) return;
-    pdf.addPage();
-    y = margin;
-  };
-  const addText = (text, x, width, options = {}) => {
-    const size = options.size || 12;
-    const style = options.style || 'normal';
-    const color = options.color || [15, 23, 36];
-    pdf.setFont('helvetica', style);
-    pdf.setFontSize(size);
-    pdf.setTextColor(...color);
-    const lines = pdf.splitTextToSize((text || '').toString(), width);
-    ensureSpace(lines.length * lineHeight + 2);
-    pdf.text(lines, x, y);
-    y += lines.length * lineHeight + (options.after || 1);
-  };
-  const addMeta = (label, value, x, width, valueSize = 12) => {
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(8);
-    pdf.setTextColor(71, 85, 105);
-    pdf.text(label, x, y);
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(valueSize);
-    pdf.setTextColor(15, 23, 36);
-    const lines = pdf.splitTextToSize((value || '').toString(), width);
-    pdf.text(lines, x, y + 5);
-  };
-  const addSectionPill = (text, colors = {}) => {
-    const fill = colors.fill || [224, 242, 254];
-    const border = colors.border || [125, 211, 252];
-    ensureSpace(14);
-    pdf.setFillColor(...fill);
-    pdf.setDrawColor(...border);
-    pdf.roundedRect(margin, y - 2, usableWidth, 10, 2, 2, 'FD');
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(11);
-    pdf.setTextColor(17, 24, 39);
-    pdf.text((text || '').toString(), margin + 4, y + 4);
-    y += 12;
-  };
-  const addTopicBreakdownBlock = (subjectName) => {
-    const subjectTopic = topicBreakdown.find((item) => normalizeSubjectName(item.subjectName) === normalizeSubjectName(subjectName));
-    if (!subjectTopic || !subjectTopic.topics.length) return;
-    addSectionPill(`${subjectName} Topic Breakdown`, { fill: [241, 245, 249], border: [203, 213, 225] });
-    subjectTopic.topics.forEach((topic) => {
-      addText(`${topic.name}: ${topic.passed}/${topic.total}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
-    });
-    y += 2;
-  };
+  return `
+    <div class="pdf-doc-root correction-pdf-root">
+      <style>
+        .pdf-doc-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.45;font-size:11pt}
+        .pdf-doc-root *{box-sizing:border-box}
+        .pdf-doc-shell{display:flex;flex-direction:column;gap:14px}
+        .pdf-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px 18px 16px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%)}
+        .pdf-brand{font-size:12pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
+        .pdf-title{font-size:18pt;font-weight:900;line-height:1.2;color:#1F2937;margin-top:8px;text-transform:uppercase}
+        .pdf-subtitle{font-size:10.5pt;color:#000;margin-top:6px}
+        .pdf-section-card{border:1px solid #CBD5E1;border-radius:16px;padding:14px;background:#fff}
+        .pdf-section-heading{font-size:13pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
+        .pdf-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+        .pdf-meta-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px}
+        .pdf-meta-card strong{display:block;font-size:9.6pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .pdf-meta-card span{display:block;color:#000;font-size:11pt;line-height:1.4;word-break:break-word}
+        .pdf-question-card{border:1px solid #CBD5E1;border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
+        .pdf-question-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+        .pdf-question-number{font-size:12pt;font-weight:900;color:#1F2937}
+        .pdf-question-status{padding:4px 10px;border-radius:999px;background:#EFF6FF;color:#000;font-size:9.6pt;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+        .pdf-question-card.status-correct .pdf-question-status{background:#DCFCE7}
+        .pdf-question-card.status-incorrect .pdf-question-status{background:#FEE2E2}
+        .pdf-question-text{margin-top:10px;color:#000;font-size:11.6pt;line-height:1.42;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .pdf-meta-line{margin-top:8px;color:#000;font-size:10.8pt;line-height:1.42;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .pdf-meta-line strong{color:#000}
+        .pdf-writeup{color:#000}
+        .pdf-option-list{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px}
+        .pdf-option-row{display:flex;gap:10px;align-items:flex-start;border:1px solid #E2E8F0;border-radius:10px;padding:8px 10px;background:#fff}
+        .pdf-option-row.is-correct{border-color:#93C5FD;background:#EFF6FF}
+        .pdf-option-row.is-selected{box-shadow:inset 0 0 0 1px rgba(47,128,237,.22)}
+        .pdf-option-letter{font-weight:900;color:#000;min-width:18px}
+        .pdf-option-text{color:#000;line-height:1.42;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        @media(max-width:640px){.pdf-meta-grid{grid-template-columns:1fr}}
+      </style>
+      <div class="pdf-doc-shell">
+        <section class="pdf-hero avoid-break">
+          <div class="pdf-brand">OPE Assessor</div>
+          <div class="pdf-title">Student Correction PDF</div>
+          <div class="pdf-subtitle">${escapeHtml(sanitizeScientificText(quiz.title || submission.quizId || 'Quiz'))}${resolvedSubjectName ? ` • ${escapeHtml(sanitizeScientificText(resolvedSubjectName))}` : ''}</div>
+        </section>
+        <section class="pdf-section-card pdf-summary-card avoid-break">
+          <div class="pdf-section-heading">Student Performance Summary</div>
+          <div class="pdf-meta-grid">
+            ${metaCards.map((item) => `
+              <div class="pdf-meta-card">
+                <strong>${escapeHtml(item.label)}</strong>
+                <span>${escapeHtml(sanitizeScientificText(item.value || ''))}</span>
+              </div>
+            `).join('')}
+          </div>
+          <div class="pdf-meta-line"><strong>Total Wrong:</strong> ${displayWrong || 0}</div>
+        </section>
+        <section class="pdf-section-card">
+          <div class="pdf-section-heading">Question Corrections</div>
+          <div class="pdf-doc-shell">
+            ${questionCards || '<div class="pdf-meta-line">No questions recorded for this submission.</div>'}
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+}
 
-  const groupedQuestions = new Map();
-  questions.forEach((entry) => {
-    const subjectName = entry.subject || 'General';
-    if (!groupedQuestions.has(subjectName)) groupedQuestions.set(subjectName, []);
-    groupedQuestions.get(subjectName).push(entry);
-  });
-  groupedQuestions.forEach((entries) => {
-    entries.sort((left, right) => {
-      const leftChosen = (submission.answers && submission.answers[left.originalIndex]) ? submission.answers[left.originalIndex] : '';
-      const rightChosen = (submission.answers && submission.answers[right.originalIndex]) ? submission.answers[right.originalIndex] : '';
-      const leftCorrect = (left.question?.answer || '').toString().toUpperCase();
-      const rightCorrect = (right.question?.answer || '').toString().toUpperCase();
-      const leftWrong = leftChosen && leftChosen !== leftCorrect ? 0 : 1;
-      const rightWrong = rightChosen && rightChosen !== rightCorrect ? 0 : 1;
-      if (leftWrong !== rightWrong) return leftWrong - rightWrong;
-      return left.originalIndex - right.originalIndex;
-    });
-  });
-
-  pdf.setFillColor(15, 23, 36);
-  pdf.rect(0, 0, pageWidth, 24, 'F');
-  pdf.setTextColor(255, 255, 255);
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(16);
-  pdf.text('Student Correction', margin, 14);
-  pdf.setFontSize(9);
-  pdf.text('OPE Assessor', pageWidth - margin, 14, { align: 'right' });
-  y = 34;
-
-  addText(quiz.title || submission.quizId || 'Quiz', margin, usableWidth, { size: 16, style: 'bold', after: 2 });
-  if (resolvedSubjectName) addText(`Subject: ${resolvedSubjectName}`, margin, usableWidth, { size: 12, color: [71, 85, 105], after: 2 });
-  const metaY = y;
-  addMeta('STUDENT', submission.name || '', margin, usableWidth * 0.42, 12);
-  addMeta('EMAIL / ID', submission.email || submission.registrationNo || '', margin + usableWidth * 0.48, usableWidth * 0.46, 12);
-  y = metaY + 16;
-  const totalDisplayMarks = resolvedSubjectName
-    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).totalMarks || questions.length)
-    : getSubmissionTotalMarks(submission, quiz);
-  const totalDisplayScore = resolvedSubjectName
-    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).score || 0)
-    : (submission.score || 0);
-  const totalDisplayPercent = resolvedSubjectName
-    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).percent || 0)
-    : (submission.percent || 0);
-  const performanceRating = getPerformanceBandLabel(totalDisplayPercent);
-  const correctCount = resolvedSubjectName
-    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).correct || 0)
-    : (submission.correctCount || 0);
-  const wrongCount = resolvedSubjectName
-    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).wrong || 0)
-    : (submission.wrongCount || 0);
-  const attemptedCount = resolvedSubjectName
-    ? ((allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || {}).attempted || 0)
-    : (submission.attemptedCount || 0);
-  const accuracyPercent = attemptedCount ? Math.round((correctCount / attemptedCount) * 100) : 0;
-  addSectionPill('Performance Summary', { fill: [224, 242, 254], border: [125, 211, 252] });
-  const summaryStartY = y;
-  addMeta('SCORE', `${formatScoreValue(totalDisplayScore)} / ${formatScoreValue(totalDisplayMarks)}`, margin, usableWidth * 0.28, 12);
-  addMeta('GRADE', `${totalDisplayPercent}%`, margin + usableWidth * 0.32, usableWidth * 0.18, 12);
-  addMeta('RATING', performanceRating, margin + usableWidth * 0.54, usableWidth * 0.24, 12);
-  addMeta('QUIZ ID', submission.quizId || quiz.id || '', margin + usableWidth * 0.80, usableWidth * 0.18, 12);
-  y = summaryStartY + 17;
-  addText(`Total Correct: ${correctCount}   |   Total Wrong: ${wrongCount}   |   Accuracy: ${accuracyPercent}%`, margin, usableWidth, { size: 11, after: 2 });
-  addText(`Strength Area: ${accuracyPercent >= 50 ? 'Improving understanding in this subject' : 'More revision needed'}   |   Weak Area: ${accuracyPercent < 70 ? 'Questions answered incorrectly appear first below' : 'Review corrections for reinforcement'}`, margin, usableWidth, { size: 11, after: 4 });
-  const relevantSubjectNames = resolvedSubjectName ? [resolvedSubjectName] : Array.from(groupedQuestions.keys());
-  relevantSubjectNames.forEach((subjectName) => addTopicBreakdownBlock(subjectName));
-
-  if (!questions.length) {
-    addText('No questions recorded for this submission.', margin, usableWidth, { size: 12 });
-  } else {
-    Array.from(groupedQuestions.entries()).forEach(([subjectName, entries]) => {
-      const subjectSummary = allBreakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(subjectName));
-      addSectionPill(subjectName, { fill: [241, 245, 249], border: [203, 213, 225] });
-      if (subjectSummary) {
-        addText(`${formatScoreValue(subjectSummary.score)} / ${formatScoreValue(subjectSummary.totalMarks)} • ${subjectSummary.percent}% • ${subjectSummary.correct} correct • ${subjectSummary.wrong} wrong`, margin, usableWidth, { size: 11, after: 3 });
-      }
-      entries.forEach((entry, idx) => {
-        const question = entry.question || {};
-        const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
-        const correct = (question.answer || '').toString().toUpperCase();
-        const isCorrect = chosen && chosen === correct;
-        const answerOptions = (question.options || []).map((option, optionIndex) => `${String.fromCharCode(65 + optionIndex)}. ${option}`).join(' | ');
-        const topic = question.topic || subjectName || 'General';
-        const keyConcept = question.keyConcept || question.topic || subjectName || 'General';
-        const learningPoint = question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.';
-        const questionLines = pdf.splitTextToSize(`${idx + 1}. ${question.question || ''}`, usableWidth - 10);
-        const optionLines = pdf.splitTextToSize(`Options: ${answerOptions}`, usableWidth - 10);
-        const explanationLines = pdf.splitTextToSize(`Explanation: ${question.explanation || 'No explanation provided yet.'}`, usableWidth - 10);
-        const learningLines = pdf.splitTextToSize(`Learning point: ${learningPoint}`, usableWidth - 10);
-        const needed = (questionLines.length + optionLines.length + explanationLines.length + learningLines.length) * lineHeight + 34;
-        ensureSpace(needed);
-        const fill = isCorrect ? [224, 242, 254] : [252, 231, 243];
-        const border = isCorrect ? [125, 211, 252] : [244, 114, 182];
-        pdf.setFillColor(...fill);
-        pdf.setDrawColor(...border);
-        pdf.roundedRect(margin, y - 3, usableWidth, needed - 4, 2, 2, 'FD');
-        addText(`${idx + 1}. ${question.question || ''}`, margin + 4, usableWidth - 8, { size: 12, style: 'bold', after: 1 });
-        addText(`Status: ${isCorrect ? 'Correct' : 'Incorrect'} • Key concept: ${keyConcept}`, margin + 4, usableWidth - 8, { size: 11, style: 'bold', color: isCorrect ? [3, 105, 161] : [190, 24, 93], after: 1 });
-        addText(`Options: ${answerOptions}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
-        addText(`Student answer: ${chosen ? `${chosen}. ${optionText(question, chosen)}` : 'No answer'}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
-        addText(`Correct answer: ${correct ? `${correct}. ${optionText(question, correct)}` : 'Not set'}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
-        addText(`Topic: ${topic}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
-        addText(`Explanation: ${question.explanation || 'No explanation provided yet.'}`, margin + 4, usableWidth - 8, { size: 11, after: 1 });
-        addText(`Learning point: ${learningPoint}`, margin + 4, usableWidth - 8, { size: 11, after: 4 });
-      });
-    });
-  }
-
-  const pageCount = pdf.internal.getNumberOfPages();
-  for (let page = 1; page <= pageCount; page++) {
-    pdf.setPage(page);
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(8);
-    pdf.setTextColor(100, 116, 139);
-    pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 7, { align: 'right' });
-  }
-
+function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
+  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
+  const resolvedSubjectName = correctionView.subjectName;
   const filename = getStudentResultPdfFilename(
     submission,
     quiz.id || submission.quizId,
     resolvedSubjectName ? `correction-${resolvedSubjectName}` : 'correction'
   );
-  if (opts.returnBlob || opts.returnFile || opts.autoSave === false) {
-    const blob = pdf.output('blob');
-    if (opts.returnFile) {
-      try {
-        return Promise.resolve(new File([blob], filename, { type: 'application/pdf' }));
-      } catch (error) {
-        return Promise.resolve(blob);
-      }
+  return downloadPagedPdfFromHtml(
+    buildCorrectionPdfDocumentHtml(submission, quiz, opts),
+    filename,
+    resolvedSubjectName ? `${resolvedSubjectName} correction PDF downloaded` : 'Correction PDF downloaded',
+    {
+      scale: 2.35,
+      contentWidthMm: 180,
+      marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
+      pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
     }
-    if (opts.returnBlob) return Promise.resolve(blob);
-    return Promise.resolve({ blob, filename });
-  }
-  pdf.save(filename);
-  return Promise.resolve(true);
+  );
 }
 
 function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) {
@@ -5252,119 +5439,117 @@ function openRequestedCorrectionsShareModal(quiz, submissions = []) {
     for (const submission of whatsappTargets) {
       await shareCorrectionViaWhatsapp(submission, quiz, { forceLinkMode: true, suppressSuccess: true });
     }
-    showNotification('Requested WhatsApp correction chats opened with the subject correction links.', 'success', 7000);
+    showNotification('Requested WhatsApp correction chats opened with the correction links.', 'success', 7000);
   };
 }
 
-function downloadFacilityIndexPdfText(quiz, data, options = {}) {
-  if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF is not loaded.');
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 10;
-  const width = pageWidth - margin * 2;
-  const subjectName = (options.subjectName || '').toString().trim() || 'General';
+function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
+  const subjectName = sanitizeScientificText((options.subjectName || '').toString().trim() || 'General');
   const summary = getFacilityAnalysisSummary(data);
-  let y = margin;
-  const addPageIfNeeded = (needed = 12) => { if (y + needed > pageHeight - margin) { pdf.addPage(); y = margin; } };
-  const write = (text, size = 10, style = 'normal', color = [15, 23, 36], after = 2, x = margin, maxWidth = width) => {
-    pdf.setFont('helvetica', style);
-    pdf.setFontSize(size);
-    pdf.setTextColor(...color);
-    const lines = pdf.splitTextToSize((text || '').toString(), maxWidth);
-    addPageIfNeeded(lines.length * 5 + after);
-    pdf.text(lines, x, y);
-    y += lines.length * 5 + after;
-  };
-  const drawSummaryCard = (label, value, x, cardWidth) => {
-    pdf.setFillColor(248, 250, 252);
-    pdf.setDrawColor(191, 219, 254);
-    pdf.roundedRect(x, y, cardWidth, 18, 2, 2, 'FD');
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(9);
-    pdf.setTextColor(71, 85, 105);
-    pdf.text(label, x + 4, y + 6);
-    pdf.setFontSize(15);
-    pdf.setTextColor(15, 23, 36);
-    pdf.text(String(value), x + 4, y + 14);
-  };
+  const orderedSections = [
+    'Very Difficult',
+    'Difficult',
+    'Moderate',
+    'Easy',
+    'Very Easy'
+  ].map((label) => ({
+    label,
+    items: (data || []).filter((item) => getFacilityDifficultyBand(item.facilityIndex).label === label)
+      .sort((left, right) => (left.facilityIndex ?? 1) - (right.facilityIndex ?? 1))
+  })).filter((section) => section.items.length);
+  const noAttemptItems = (data || []).filter((item) => item.facilityIndex == null);
+  if (noAttemptItems.length) orderedSections.push({ label: 'No Attempts', items: noAttemptItems });
+  return `
+    <div class="pdf-doc-root facility-pdf-root">
+      <style>
+        .facility-pdf-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.45;font-size:11pt}
+        .facility-pdf-root *{box-sizing:border-box}
+        .facility-shell{display:flex;flex-direction:column;gap:14px}
+        .facility-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%)}
+        .facility-brand{font-size:12pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
+        .facility-title{font-size:18pt;font-weight:900;line-height:1.2;color:#1F2937;margin-top:8px;text-transform:uppercase}
+        .facility-subtitle{font-size:10.5pt;color:#000;margin-top:6px}
+        .facility-summary{border:1px solid #CBD5E1;border-radius:16px;background:#fff;padding:14px}
+        .facility-section-heading{font-size:13pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
+        .facility-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+        .facility-summary-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px}
+        .facility-summary-card strong{display:block;font-size:9.6pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .facility-summary-card span{display:block;color:#000;font-size:11pt;line-height:1.35}
+        .facility-band-section{display:flex;flex-direction:column;gap:10px}
+        .facility-band-heading{padding:10px 14px;border-radius:14px;font-size:11pt;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#000;border:1px solid var(--band-accent);background:var(--band-fill)}
+        .facility-question-card{border:1px solid #CBD5E1;border-left:4px solid var(--band-accent);border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
+        .facility-question-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
+        .facility-question-title{font-size:12pt;font-weight:900;color:#1F2937}
+        .facility-question-chip{padding:4px 10px;border-radius:999px;background:var(--band-fill);color:#000;font-size:9.6pt;font-weight:800}
+        .facility-question-text{margin-top:10px;color:#000;font-size:11.6pt;line-height:1.42;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .facility-meta-line{margin-top:8px;color:#000;font-size:10.8pt;line-height:1.42;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .facility-meta-line strong{color:#000}
+        .facility-writeup{color:#000}
+        @media(max-width:640px){.facility-summary-grid{grid-template-columns:1fr}}
+      </style>
+      <div class="facility-shell">
+        <section class="facility-hero avoid-break">
+          <div class="facility-brand">OPE Assessor</div>
+          <div class="facility-title">Facility Index PDF</div>
+          <div class="facility-subtitle">${escapeHtml(subjectName)} • ${escapeHtml(sanitizeScientificText(quiz.title || quiz.id || 'Quiz'))}</div>
+        </section>
+        <section class="facility-summary avoid-break">
+          <div class="facility-section-heading">Summary</div>
+          <div class="facility-summary-grid">
+            <div class="facility-summary-card"><strong>Average Facility Index</strong><span>${summary.average}%</span></div>
+            <div class="facility-summary-card"><strong>Total Questions</strong><span>${summary.totalQuestions}</span></div>
+            <div class="facility-summary-card"><strong>Easy / Moderate / Difficult</strong><span>${summary.percentages.easy}% / ${summary.percentages.moderate}% / ${summary.percentages.difficult}%</span></div>
+          </div>
+        </section>
+        ${orderedSections.map((section) => {
+          const band = section.label === 'No Attempts'
+            ? { color: '#F8FAFC', accent: '#CBD5E1' }
+            : getFacilityDifficultyBand(section.items[0].facilityIndex);
+          return `
+            <section class="facility-band-section">
+              <div class="facility-band-heading avoid-break" style="--band-fill:${band.color};--band-accent:${band.accent}">${escapeHtml(section.label)}${section.label === 'No Attempts' ? '' : ` (${band.min}-${band.max}%)`}</div>
+              ${section.items.map((item) => {
+                const percentText = item.facilityIndex == null ? 'No attempts' : `${Math.round(item.facilityIndex * 100)}%`;
+                const correctAnswerText = item.answer ? `${item.answer}. ${getDisplayOptionText(item, item.answer)}` : 'Not set';
+                const optionCounts = (item.optionCounts || []).map((option) => `${option.letter}: ${option.count}`).join(' • ');
+                return `
+                  <article class="facility-question-card avoid-break" style="--band-fill:${band.color};--band-accent:${band.accent}">
+                    <div class="facility-question-head">
+                      <div class="facility-question-title">Question ${item.index} • ${percentText} • ${escapeHtml(section.label)}</div>
+                      <div class="facility-question-chip">${escapeHtml(section.label)}</div>
+                    </div>
+                    <div class="facility-question-text">${escapeHtml(sanitizeScientificText(item.question || ''))}</div>
+                    <div class="facility-meta-line"><strong>Options:</strong></div>
+                    ${buildPdfOptionListHtml(item, { correctAnswer: item.answer || '' })}
+                    <div class="facility-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
+                    <div class="facility-meta-line"><strong>Seen:</strong> ${item.seen} • <strong>Attempted:</strong> ${item.attempted} • <strong>Correct:</strong> ${item.correct} • <strong>Wrong:</strong> ${Math.max(0, item.attempted - item.correct)}</div>
+                    <div class="facility-meta-line"><strong>Topic:</strong> ${escapeHtml(sanitizeScientificText(item.topic || 'Not set'))}</div>
+                    <div class="facility-meta-line"><strong>Option counts:</strong> ${escapeHtml(optionCounts || 'No option counts yet.')}</div>
+                    <div class="facility-meta-line facility-writeup"><strong>Explanation:</strong> ${escapeHtml(sanitizeScientificText(item.explanation || 'No explanation provided yet.'))}</div>
+                  </article>
+                `;
+              }).join('')}
+            </section>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
 
-  pdf.setFillColor(47, 128, 237);
-  pdf.rect(0, 0, pageWidth, 22, 'F');
-  pdf.setTextColor(255, 255, 255);
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(16);
-  pdf.text((quiz.examName || 'UPSS').toString(), margin, 13);
-  pdf.setFontSize(10);
-  pdf.text('FACILITY INDEX ANALYSIS REPORT', pageWidth - margin, 13, { align: 'right' });
-  y = 30;
-  write(subjectName, 16, 'bold', [15, 23, 36], 2);
-  write(`Quiz ID: ${quiz.id || ''} • Date: ${new Date().toLocaleDateString()}`, 9, 'normal', [71, 85, 105], 6);
-  const gap = 4;
-  const cardWidth = (width - gap * 2) / 3;
-  drawSummaryCard('Average Facility Index', `${summary.average}%`, margin, cardWidth);
-  drawSummaryCard('Total Questions', summary.totalQuestions, margin + cardWidth + gap, cardWidth);
-  drawSummaryCard('Easy / Moderate / Difficult', `${summary.percentages.easy}% / ${summary.percentages.moderate}% / ${summary.percentages.difficult}%`, margin + (cardWidth + gap) * 2, cardWidth);
-  y += 24;
-  pdf.setFillColor(226, 232, 240);
-  pdf.roundedRect(margin, y, width, 6, 2, 2, 'F');
-  const totalPercent = Math.max(1, summary.percentages.easy + summary.percentages.moderate + summary.percentages.difficult);
-  const difficultWidth = width * (summary.percentages.difficult / totalPercent);
-  const moderateWidth = width * (summary.percentages.moderate / totalPercent);
-  const easyWidth = width * (summary.percentages.easy / totalPercent);
-  pdf.setFillColor(252, 165, 165);
-  pdf.roundedRect(margin, y, difficultWidth, 6, 2, 2, 'F');
-  pdf.setFillColor(253, 230, 138);
-  pdf.rect(margin + difficultWidth, y, moderateWidth, 6, 'F');
-  pdf.setFillColor(125, 211, 252);
-  pdf.roundedRect(margin + difficultWidth + moderateWidth, y, easyWidth, 6, 2, 2, 'F');
-  y += 12;
-  if (!data.length) write('No submissions yet to analyze.', 11);
-  const orderedBands = ['Very Difficult', 'Difficult', 'Moderate', 'Easy', 'Very Easy'];
-  orderedBands.forEach((label) => {
-    const items = data.filter((item) => getFacilityDifficultyBand(item.facilityIndex).label === label)
-      .sort((left, right) => (left.facilityIndex ?? 1) - (right.facilityIndex ?? 1));
-    if (!items.length) return;
-    const band = getFacilityDifficultyBand(items[0].facilityIndex);
-    addPageIfNeeded(20);
-    pdf.setFillColor(...hexToRgbTriplet(band.color));
-    pdf.setDrawColor(...hexToRgbTriplet(band.accent));
-    pdf.roundedRect(margin, y, width, 10, 2, 2, 'FD');
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(11);
-    pdf.setTextColor(17, 24, 39);
-    pdf.text(`${label} (${band.min}-${band.max}%)`, margin + 4, y + 6.5);
-    y += 14;
-    items.forEach((item) => {
-      const optionLines = (item.optionCounts || []).map((option) => `${option.letter}: ${option.count}`).join('   ');
-      const correctAnswer = (item.answer || '').toString().toUpperCase();
-      const questionLines = pdf.splitTextToSize((item.question || '').toString(), width - 10);
-      const explanationLines = pdf.splitTextToSize(`Explanation: ${item.explanation || 'No explanation provided yet.'}`, width - 10);
-      const optionWrap = pdf.splitTextToSize(`Option counts: ${optionLines}`, width - 10);
-      const needed = (questionLines.length * 7) + (explanationLines.length * 6) + (optionWrap.length * 6) + 34;
-      addPageIfNeeded(needed);
-      pdf.setFillColor(255, 255, 255);
-      pdf.setDrawColor(226, 232, 240);
-      pdf.roundedRect(margin, y, width, needed - 4, 2, 2, 'FD');
-      write(`Question ${item.index} • ${Math.round((item.facilityIndex || 0) * 100)}% • ${label}`, 10, 'bold', [15, 23, 36], 2, margin + 4, width - 8);
-      write(item.question || '', 12, 'normal', [15, 23, 36], 2, margin + 4, width - 8);
-      write(`Correct answer: ${correctAnswer || 'Not set'}`, 10, 'bold', [15, 23, 36], 1, margin + 4, width - 8);
-      write(`Seen: ${item.seen} • Attempted: ${item.attempted} • Correct: ${item.correct} • Wrong: ${Math.max(0, item.attempted - item.correct)}`, 9, 'normal', [71, 85, 105], 1, margin + 4, width - 8);
-      write(`Topic: ${item.topic || 'Not set'}`, 9, 'normal', [71, 85, 105], 1, margin + 4, width - 8);
-      write(`Option counts: ${optionLines}`, 9, 'normal', [15, 23, 36], 1, margin + 4, width - 8);
-      write(`Explanation: ${item.explanation || 'No explanation provided yet.'}`, 9, 'normal', [15, 23, 36], 4, margin + 4, width - 8);
-    });
-  });
-  const pageCount = pdf.internal.getNumberOfPages();
-  for (let page = 1; page <= pageCount; page++) {
-    pdf.setPage(page);
-    pdf.setFontSize(8);
-    pdf.setTextColor(100, 116, 139);
-    pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 7, { align: 'right' });
-  }
-  pdf.save(`${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`);
-  return Promise.resolve(true);
+function downloadFacilityIndexPdfText(quiz, data, options = {}) {
+  const subjectName = (options.subjectName || '').toString().trim() || 'General';
+  return downloadPagedPdfFromHtml(
+    buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
+    `${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`,
+    Object.prototype.hasOwnProperty.call(options, 'successMessage') ? options.successMessage : 'Facility index PDF downloaded',
+    {
+      scale: 2.3,
+      contentWidthMm: 180,
+      marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
+      pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
+    }
+  );
 }
 
 function getTeacherSummaryQuestionCount(quiz, submissions = []) {
@@ -6155,12 +6340,12 @@ function buildCertificateSignatureSvg(item, index = 0) {
 
 function buildCertificateVerificationUrl(quiz, submission, options = {}) {
   const base = window.location.href.split('?')[0];
+  const shareKey = getSubmissionShareKey(submission);
   const params = new URLSearchParams();
-  params.set('resultQuiz', submission?.quizId || quiz?.id || '');
-  params.set('resultKey', submission?.submissionId || buildSubmissionIdentity(submission));
-  if (options.downloadCorrection) params.set('downloadCorrection', '1');
+  params.set('r', shareKey);
+  if (options.downloadCorrection) params.set('c', '1');
   const correctionSubject = (options.correctionSubject || '').toString().trim();
-  if (correctionSubject) params.set('correctionSubject', correctionSubject);
+  if (correctionSubject) params.set('s', correctionSubject);
   return `${base}?${params.toString()}`;
 }
 
@@ -6183,7 +6368,7 @@ function renderCertificateVerificationMarkup(quiz, submission) {
   return `
     <div class="cert-verification">
       <div class="cert-verification-copy">
-        <div class="cert-verification-label">Certificate Authentication</div>
+        <div class="cert-verification-label">CERTIFICATE AUTHENTICATION</div>
       </div>
       <div class="cert-verification-qr" aria-label="Certificate verification QR code">
         ${qrSvg || '<div class="cert-verification-fallback">QR unavailable</div>'}
@@ -6234,25 +6419,62 @@ function getSubmissionAveragePercent(submission, quiz) {
 }
 
 function buildStudentTopicBreakdownHtml(quiz, submission) {
-  if (!quiz?.showTopicsAfterSubmission) return '';
-  const breakdown = computeSubmissionTopicBreakdown(quiz, submission);
-  if (!breakdown.length) return '';
+  return '';
+}
+
+function getResultInfoIconSvg(kind = 'file') {
+  const icons = {
+    submitted: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 2.75a.75.75 0 0 1 1.5 0V4h7V2.75a.75.75 0 0 1 1.5 0V4h1.25A2.75 2.75 0 0 1 21 6.75v11.5A2.75 2.75 0 0 1 18.25 21H5.75A2.75 2.75 0 0 1 3 18.25V6.75A2.75 2.75 0 0 1 5.75 4H7V2.75ZM4.5 9.5v8.75c0 .69.56 1.25 1.25 1.25h12.5c.69 0 1.25-.56 1.25-1.25V9.5H4.5Zm1.25-4C5.06 5.5 4.5 6.06 4.5 6.75V8h15V6.75c0-.69-.56-1.25-1.25-1.25H5.75Z" fill="currentColor"/></svg>`,
+    answered: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2.5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 12 2.5Zm4.02 7.94-4.77 5.24a.75.75 0 0 1-1.1.03L7.7 13.36a.75.75 0 1 1 1.1-1.02l1.9 2.04 4.2-4.62a.75.75 0 1 1 1.12 1.01Z" fill="currentColor"/></svg>`,
+    email: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4.75 5A2.75 2.75 0 0 0 2 7.75v8.5A2.75 2.75 0 0 0 4.75 19h14.5A2.75 2.75 0 0 0 22 16.25v-8.5A2.75 2.75 0 0 0 19.25 5H4.75Zm0 1.5h14.5c.43 0 .8.22 1.02.55l-7 4.95a2.25 2.25 0 0 1-2.54 0l-7-4.95c.22-.33.59-.55 1.02-.55Zm-1.25 9.75V8.83l6.34 4.48a3.75 3.75 0 0 0 4.32 0l6.34-4.48v7.42c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25Z" fill="currentColor"/></svg>`,
+    quiz: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7.75 3A2.75 2.75 0 0 0 5 5.75v12.5A2.75 2.75 0 0 0 7.75 21h8.5A2.75 2.75 0 0 0 19 18.25V8.81a2.75 2.75 0 0 0-.81-1.94l-2.06-2.06A2.75 2.75 0 0 0 14.19 4H7.75Zm0 1.5h6.19c.33 0 .65.13.88.37l2.06 2.06c.23.23.37.55.37.88v10.44c0 .69-.56 1.25-1.25 1.25h-8.5c-.69 0-1.25-.56-1.25-1.25V5.75c0-.69.56-1.25 1.25-1.25Zm1.5 6.25a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Zm0 3.5a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z" fill="currentColor"/></svg>`,
+    performance: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2.5c-1.33 0-2.42.93-2.68 2.18a2.75 2.75 0 0 0-2.64 2.37 2.75 2.75 0 0 0-1.63 4.75 2.75 2.75 0 0 0 1.63 4.75 2.75 2.75 0 0 0 2.64 2.37A2.75 2.75 0 0 0 12 21.5c1.33 0 2.42-.93 2.68-2.18a2.75 2.75 0 0 0 2.64-2.37 2.75 2.75 0 0 0 1.63-4.75 2.75 2.75 0 0 0-1.63-4.75 2.75 2.75 0 0 0-2.64-2.37A2.75 2.75 0 0 0 12 2.5Zm0 6a3.5 3.5 0 1 1-3.5 3.5A3.5 3.5 0 0 1 12 8.5Z" fill="currentColor"/></svg>`
+  };
+  return icons[kind] || icons.quiz;
+}
+
+function buildPrimaryCertificateSignatureMarkup(quiz = {}) {
+  const primary = normalizeCertificateSignatories(quiz.certificateSignatories)[0] || {
+    name: getTeacherSignatureLabel(quiz.teacherId || state.teacherId),
+    title: 'Teacher',
+    showNameOnCertificate: true
+  };
+  const name = (primary.name || getTeacherSignatureLabel(quiz.teacherId || state.teacherId) || 'Teacher').toString().trim();
+  const title = (primary.title || 'Teacher').toString().trim();
   return `
-    <div class="student-topic-card">
-      <h4>Topic Breakdown</h4>
-      <div class="student-topic-breakdown-list">
-        ${breakdown.map((subject) => `
-          <div class="student-topic-subject-block">
-            <strong class="student-topic-subject-name">${escapeHtml(subject.subjectName)}</strong>
-            <div class="student-topic-breakdown-table">
-              <div class="student-topic-breakdown-head">Topic Name</div>
-              <div class="student-topic-breakdown-head">Total Questions</div>
-              <div class="student-topic-breakdown-head">Passed / Total</div>
-              ${subject.topics.map((topic) => `
-                <div>${escapeHtml(topic.name)}</div>
-                <div>${topic.total}</div>
-                <div>${topic.passed}/${topic.total}</div>
-              `).join('')}
+    <div class="cert-signature-block avoid-break">
+      <div class="cert-signature-script">${buildCertificateSignatureSvg(primary, 0)}</div>
+      <div class="cert-signature-line"></div>
+      <div class="cert-signature-name">${escapeHtml(name.toUpperCase())}</div>
+      <div class="cert-signature-role">${escapeHtml(title)}</div>
+    </div>
+  `;
+}
+
+function buildStudentResultSupplementHtml(quiz, submission) {
+  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const items = breakdown.length ? breakdown : [{
+    name: getQuestionSubjectLabel((submission.allQuestions || [])[0] || {}),
+    score: submission.score || 0,
+    totalMarks: getSubmissionTotalMarks(submission, quiz),
+    percent: getSubmissionAveragePercent(submission, quiz),
+    correct: submission.correctCount || 0,
+    attempted: submission.attemptedCount || 0,
+    total: (submission.allQuestions || []).length,
+    wrong: submission.wrongCount || 0
+  }];
+  if (!items.length) return '';
+  return `
+    <div class="cert-performance-section avoid-break">
+      <div class="cert-section-ribbon cert-section-ribbon-secondary">PERFORMANCE SUMMARY</div>
+      <div class="cert-performance-list ${items.length === 1 ? 'single' : ''}">
+        ${items.map((item) => `
+          <div class="cert-performance-card avoid-break">
+            <div class="cert-performance-icon">${getResultInfoIconSvg('performance')}</div>
+            <div class="cert-performance-copy">
+              <div class="cert-performance-subject">${escapeHtml(sanitizeScientificText(item.name || 'General'))}</div>
+              <div class="cert-performance-score">${formatScoreValue(item.score)} / ${formatScoreValue(item.totalMarks || item.total)} • ${item.percent || 0}%</div>
+              <div class="cert-performance-meta">${item.correct || 0} correct • ${item.attempted || 0} attempted • ${item.total || 0} total${item.wrong ? ` • ${item.wrong} wrong` : ''}</div>
             </div>
           </div>
         `).join('')}
@@ -6261,41 +6483,11 @@ function buildStudentTopicBreakdownHtml(quiz, submission) {
   `;
 }
 
-function buildStudentResultSupplementHtml(quiz, submission) {
-  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
-  const shouldShowBreakdown = breakdown.length > 1 || (!!quiz && !!quiz.showTopicsAfterSubmission);
-  const topicBreakdownHtml = buildStudentTopicBreakdownHtml(quiz, submission);
-  if ((!shouldShowBreakdown || !breakdown.length) && !topicBreakdownHtml) return '';
-  const averagePercent = getSubmissionAveragePercent(submission, quiz);
-  const totalMarks = getSubmissionTotalMarks(submission, quiz);
-  const subjectHtml = shouldShowBreakdown && breakdown.length ? `
-    <div class="student-topic-card">
-      <h4>${breakdown.length > 1 ? 'Performance by Subject' : 'Performance Summary'}</h4>
-      ${breakdown.length > 1 ? `<div class="small" style="margin:0 0 12px;color:#475569">Cumulative total: ${formatScoreValue(submission.score || 0)} / ${formatScoreValue(totalMarks)} • Average across ${breakdown.length} subjects: ${averagePercent}%</div>` : ''}
-      <div class="student-topic-grid">
-        ${breakdown.map((item) => {
-          const attempted = item.attempted || 0;
-          const correct = item.correct || 0;
-          const total = item.total || 0;
-          const percent = item.percent || 0;
-          return `
-            <div class="student-topic-item">
-              <strong>${escapeHtml(item.name)}</strong>
-              <span>${formatScoreValue(item.score)} / ${formatScoreValue(item.totalMarks || total)} • ${percent}%</span>
-              <small>${correct} correct • ${attempted} attempted • ${total} total${item.wrong ? ` • ${item.wrong} wrong` : ''}</small>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    </div>
-  ` : '';
-  return `${subjectHtml}${topicBreakdownHtml}`;
-}
-
 function buildStudentResultFullHtml(quiz, submission, rankValue, opts = {}) {
   const cardHtml = buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts);
   const supplementHtml = buildStudentResultSupplementHtml(quiz, submission);
-  return `<div class="student-result-full">${cardHtml}${supplementHtml}</div>`;
+  const actionsHtml = opts.includeActions ? buildStudentResultActionsHtml(submission) : '';
+  return `<div class="student-result-full">${cardHtml}${supplementHtml}${actionsHtml}</div>`;
 }
 
 function buildCorrectionRequestStatusHtml(submission = {}) {
@@ -6309,20 +6501,33 @@ function buildCorrectionRequestStatusHtml(submission = {}) {
   `;
 }
 
+function buildStudentResultActionsHtml(submission = {}) {
+  const correctionRequested = !!submission.correctionRequested;
+  return `
+    <div class="result-actions no-print">
+      <div class="result-action-note">
+        <div class="small">If you want a correction PDF, click Request Correction and enter the WhatsApp number where your teacher should send it. Your email or registration details from quiz start are already saved.</div>
+        <div id="correctionRequestStatus" style="margin-top:8px">${buildCorrectionRequestStatusHtml(submission)}</div>
+      </div>
+      <button id="requestCorrectionBtn" class="btn btn-secondary">${correctionRequested ? 'Update Request' : 'Request Correction'}</button>
+      <button id="downloadStudentResultPdf" class="btn btn-primary">Download PDF</button>
+      <button id="printStudentResult" class="btn btn-secondary">Print Result</button>
+      <button id="closeStudentResult" class="btn btn-secondary">Close</button>
+    </div>
+  `;
+}
+
 function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {}) {
-  const includeActions = !!opts.includeActions;
   const totalQuestions = (submission.allQuestions || []).length;
   const totalMarks = getSubmissionTotalMarks(submission, quiz);
   const attemptedCount = submission.attemptedCount || Object.keys(submission.answers || {}).filter(key => !!submission.answers[key]).length;
   const submittedText = submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'N/A';
-  const correctionRequested = !!submission.correctionRequested;
   const scoreText = `${formatScoreValue(submission.score || 0)} / ${formatScoreValue(totalMarks)}`;
-  const quizName = escapeHtml(quiz.title || submission.quizId || 'Quiz');
-  const institutionName = escapeHtml(quiz.examName || quiz.institution || quiz.title || 'OPE Assessor');
+  const quizName = escapeHtml(sanitizeScientificText((quiz.title || submission.quizId || 'Quiz').toUpperCase()));
+  const institutionName = escapeHtml(sanitizeScientificText(quiz.examName || quiz.institution || ''));
   const studentName = escapeHtml((submission.name || '').toUpperCase() || 'STUDENT');
   const rankText = rankValue || '-';
   const percent = clampPercent(submission.percent || 0);
-  const performanceLabel = getPerformanceBandLabel(percent);
   const identityLabel = (submission.email || '').includes('@') ? 'Email' : 'Registration No';
   const hasAdjustedScore = hasManualScoreOverride(submission);
   const adjustedNote = hasAdjustedScore
@@ -6330,20 +6535,40 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
       ? `Teacher adjusted score on ${new Date(submission.manualScoreEditedAt).toLocaleString()}`
       : 'Teacher adjusted score applied')
     : '';
-  const signatoriesHtml = renderCertificateSignatories(quiz.certificateSignatories);
   const displayedStatus = submission.resultStatus || (percent >= (submission.passMark || quiz.passMark || 50) ? 'Pass' : 'Fail');
+  const details = [
+    {
+      kind: 'submitted',
+      label: 'Submitted',
+      value: escapeHtml(submittedText)
+    },
+    {
+      kind: 'answered',
+      label: 'Answered',
+      value: `${submission.correctCount || 0} correct / ${attemptedCount} attempted`
+    },
+    {
+      kind: 'email',
+      label: identityLabel,
+      value: escapeHtml(sanitizeScientificText(submission.email || submission.registrationNo || ''))
+    },
+    {
+      kind: 'quiz',
+      label: 'Quiz Name',
+      value: quizName
+    }
+  ];
   return `
     <div class="student-result-container cert-result">
       <div class="cert-inner">
-        <div class="cert-top-rule"></div>
         <div class="cert-header">
           ${buildCertificateBrandMarkup()}
-          <div class="cert-school">${institutionName}</div>
-          <div class="cert-test">${quizName}</div>
+          ${institutionName ? `<div class="cert-header-meta">${institutionName}</div>` : ''}
+          <div class="cert-quiz-title">${quizName}</div>
         </div>
 
-        <div class="cert-title">RESULT SUMMARY</div>
-        <div class="cert-platform">Verified by OPE Assessor</div>
+        <div class="cert-section-ribbon">RESULT SUMMARY</div>
+        <div class="cert-platform">VERIFIED BY OPE ASSESSOR</div>
 
         <div class="cert-student-panel">
           <div class="cert-label">STUDENT NAME</div>
@@ -6351,7 +6576,8 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
         </div>
 
         <div class="cert-score-wrap">
-          <div class="cert-score-ring" style="--cert-progress:${percent}">
+          <div class="cert-score-backdrop"></div>
+          <div class="cert-score-ring">
             <div class="cert-score-ring-inner">
               <div class="cert-score-label">SCORE</div>
               <div class="cert-score-main">${escapeHtml(scoreText)}</div>
@@ -6359,125 +6585,125 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
             </div>
           </div>
           <div class="cert-status-badge ${displayedStatus === 'Pass' ? 'cert-status-pass' : 'cert-status-fail'}">${escapeHtml(displayedStatus)}</div>
-          <div class="cert-performance">${performanceLabel}</div>
           ${hasAdjustedScore ? `<div class="cert-adjusted-note">${escapeHtml(adjustedNote)}</div>` : ''}
         </div>
 
         <div class="cert-rank">RANK: ${escapeHtml(rankText)}</div>
 
         <div class="cert-details-grid">
-          <div class="cert-detail-card">
-            <div class="cert-detail-label">Submitted</div>
-            <div class="cert-detail-value">${escapeHtml(submittedText)}</div>
-          </div>
-          <div class="cert-detail-card">
-            <div class="cert-detail-label">Answered</div>
-            <div class="cert-detail-value">
-              ${submission.correctCount || 0} correct / ${attemptedCount} attempted
-              <div class="cert-detail-subline">${totalQuestions} question(s) • ${formatScoreValue(totalMarks)} total mark(s)</div>
-              ${hasAdjustedScore ? '<div class="cert-detail-subline">Teacher score adjustment is active for this result.</div>' : ''}
+          ${details.map((item) => `
+            <div class="cert-detail-card">
+              <div class="cert-detail-icon">${getResultInfoIconSvg(item.kind)}</div>
+              <div class="cert-detail-copy">
+                <div class="cert-detail-label">${escapeHtml(item.label)}</div>
+                <div class="cert-detail-value">${item.value}</div>
+                ${item.kind === 'answered' ? `<div class="cert-detail-subline">${totalQuestions} total question(s) • ${formatScoreValue(totalMarks)} total mark(s)</div>` : ''}
+              </div>
             </div>
-          </div>
-          <div class="cert-detail-card">
-            <div class="cert-detail-label">${identityLabel}</div>
-            <div class="cert-detail-value">${escapeHtml(submission.email || '')}</div>
-          </div>
-          <div class="cert-detail-card">
-            <div class="cert-detail-label">Quiz Name</div>
-            <div class="cert-detail-value">${quizName}</div>
-          </div>
+          `).join('')}
         </div>
 
-        ${signatoriesHtml}
+        ${buildPrimaryCertificateSignatureMarkup(quiz)}
         ${renderCertificateVerificationMarkup(quiz, submission)}
 
         <div class="cert-footer">Verified Digital Result • Generated by OPE Assessor</div>
         <div class="cert-footer-sub">Clean • Secure • Beautiful • Parent-ready</div>
       </div>
-
-      ${includeActions ? `
-        <div class="result-actions no-print">
-          <div style="width:100%;padding:12px 14px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;text-align:left;margin-bottom:10px">
-            <div class="small">If you want a correction PDF, click Request Correction and enter the WhatsApp number where your teacher should send it. Your email or registration details from quiz start are already saved.</div>
-            <div id="correctionRequestStatus" style="margin-top:8px">${buildCorrectionRequestStatusHtml(submission)}</div>
-          </div>
-          <button id="requestCorrectionBtn" class="btn btn-secondary">${correctionRequested ? 'Update Request' : 'Request Correction'}</button>
-          <button id="downloadStudentResultPdf" class="btn btn-primary">Download PDF</button>
-          <button id="printStudentResult" class="btn btn-secondary">Print Result</button>
-          <button id="closeStudentResult" class="btn btn-secondary">Close</button>
-        </div>
-      ` : ''}
     </div>
   `;
 }
 
 function getCertificateResultCss() {
   return `
-    .cert-result{font-family:Inter,Arial,sans-serif;background:#fff;color:#101821;border-radius:10px;padding:10px;box-shadow:0 18px 45px rgba(15,23,42,.12);border:4px solid #D9B45A}
-    .cert-inner{position:relative;border:2px solid #E4BD5B;border-radius:8px;padding:18px 26px 16px;background:#fff;overflow:hidden}
-    .cert-inner:before{content:"";position:absolute;inset:0;background:linear-gradient(105deg,rgba(15,23,42,.025) 0 8%,transparent 8% 14%,rgba(15,23,42,.018) 14% 22%,transparent 22%);pointer-events:none}
-    .cert-top-rule{height:22px;border-radius:999px;background:#DDBB5E;margin:0 0 -8px;position:relative;z-index:2}
-    .cert-header{background:linear-gradient(135deg,#08111C 0%,#101922 58%,#1F2937 100%);color:#fff;text-align:center;border-radius:0 0 22px 22px;padding:22px 14px 18px;position:relative;margin-top:-4px}
-    .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
-    .cert-logo-badge{width:62px;height:62px;border-radius:20px;background:linear-gradient(135deg,#DDBB5E,#F6E7B6);padding:3px;box-shadow:0 10px 24px rgba(0,0,0,.2)}
-    .cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:17px;background:linear-gradient(135deg,#0F172A,#1E293B);color:#F8E8B0;font-size:22px;font-weight:900;letter-spacing:.1em}
+    .student-result-full{display:flex;flex-direction:column;gap:14px}
+    .cert-result{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;background:#ffffff;color:#1F2937;border-radius:18px;box-shadow:0 18px 46px rgba(47,128,237,.14)}
+    .cert-inner{position:relative;border:4px solid #2F80ED;border-radius:18px;padding:24px 22px 20px;background:
+      radial-gradient(circle at top left, rgba(86,204,242,.18), transparent 24%),
+      radial-gradient(circle at top right, rgba(47,128,237,.16), transparent 28%),
+      linear-gradient(180deg,#ffffff 0%,#F8FAFC 100%);
+      overflow:hidden}
+    .cert-inner:before{content:"";position:absolute;inset:10px;border:2px solid rgba(47,128,237,.22);border-radius:12px;pointer-events:none}
+    .cert-header{text-align:center;padding:8px 0 0;position:relative;z-index:1}
+    .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
+    .cert-logo-badge{width:72px;height:72px;border-radius:22px;border:4px solid #2F80ED;background:#ffffff;padding:5px}
+    .cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:16px;background:#ffffff;color:#2F80ED;font-size:28px;font-weight:900;letter-spacing:.05em}
     .cert-logo-text{text-align:left}
-    .cert-logo-text strong{display:block;font-size:21px;line-height:1;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
-    .cert-logo-text span{display:block;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#DDBB5E;margin-top:5px}
-    .cert-school{font-size:27px;line-height:1.12;font-weight:900;letter-spacing:.08em;text-transform:uppercase;margin-top:4px}
-    .cert-test{font-size:17px;color:#DDBB5E;font-weight:900;letter-spacing:.05em;text-transform:uppercase;margin-top:6px}
-    .cert-title{text-align:center;font-size:30px;font-weight:900;letter-spacing:.1em;margin:20px 0 2px;color:#101821}
-    .cert-platform{text-align:center;font-size:13px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#6B7280;margin-bottom:14px}
-    .cert-student-panel{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:14px;text-align:center;padding:14px 12px;margin:0 auto;max-width:100%}
-    .cert-label,.cert-detail-label{font-weight:900;color:#6B7280;text-transform:uppercase;letter-spacing:.06em}
-    .cert-student-name{font-size:34px;font-weight:900;letter-spacing:.08em;margin-top:6px;color:#101821}
-    .cert-score-wrap{display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0 16px}
-    .cert-score-ring{--cert-progress:0;width:205px;height:205px;border-radius:999px;padding:12px;background:conic-gradient(from -90deg,#DDBB5E 0 calc(var(--cert-progress) * 1%),#F5E6B8 calc(var(--cert-progress) * 1%) 100%);box-shadow:0 14px 30px rgba(15,23,42,.08)}
-    .cert-score-ring-inner{width:100%;height:100%;border-radius:999px;background:radial-gradient(circle at top,#172436 0%,#101922 68%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px;box-sizing:border-box;color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
-    .cert-score-label{font-size:13px;font-weight:900;color:#DDBB5E;letter-spacing:.13em;margin-bottom:8px}
-    .cert-score-main{font-size:34px;font-weight:900;line-height:1.08}
-    .cert-score-percent{font-size:31px;color:#fff;font-weight:900;margin-top:8px}
-    .cert-status-badge{padding:7px 16px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}
+    .cert-logo-text strong{display:block;font-size:28px;line-height:1.05;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
+    .cert-logo-text span{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#1F2937;margin-top:5px;font-weight:800}
+    .cert-header-meta{margin-top:8px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#2F80ED}
+    .cert-quiz-title{margin-top:14px;font-size:44px;line-height:1.08;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
+    .cert-section-ribbon{display:flex;align-items:center;justify-content:center;gap:12px;margin:20px auto 6px;width:fit-content;padding:8px 20px;border-radius:999px;background:linear-gradient(180deg,#2F80ED 0%,#1F67D8 100%);color:#ffffff;font-size:15px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;position:relative;z-index:1}
+    .cert-section-ribbon:before,.cert-section-ribbon:after{content:"";display:block;width:88px;height:2px;background:linear-gradient(90deg,transparent,#56CCF2,#2F80ED);border-radius:999px}
+    .cert-section-ribbon-secondary{margin-top:0}
+    .cert-platform{text-align:center;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#5B6B84;margin-bottom:14px}
+    .cert-student-panel{border:2px solid rgba(47,128,237,.5);background:#F8FAFC;border-radius:18px;text-align:center;padding:14px 16px;margin:0 auto}
+    .cert-label,.cert-detail-label{font-weight:900;color:#2F80ED;text-transform:uppercase;letter-spacing:.08em}
+    .cert-student-name{font-size:58px;font-weight:900;letter-spacing:.04em;line-height:1.06;margin-top:8px;color:#0F172A}
+    .cert-score-wrap{position:relative;display:flex;flex-direction:column;align-items:center;gap:10px;margin:18px 0 16px}
+    .cert-score-backdrop{position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);width:min(480px,92%);height:168px;background:
+      radial-gradient(circle, rgba(86,204,242,.35) 0 2px, transparent 3px);
+      background-size:12px 12px;opacity:.45;pointer-events:none}
+    .cert-score-ring{width:220px;height:220px;border-radius:50%;border:6px solid #2F80ED;background:#ffffff;display:flex;align-items:center;justify-content:center;position:relative;z-index:1}
+    .cert-score-ring-inner{width:calc(100% - 16px);height:calc(100% - 16px);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#111827;background:#ffffff}
+    .cert-score-label{font-size:13px;font-weight:900;letter-spacing:.12em;color:#2F80ED}
+    .cert-score-main{font-size:52px;font-weight:900;line-height:1.04;margin-top:6px;color:#111827}
+    .cert-score-percent{font-size:38px;color:#2F80ED;font-weight:900;line-height:1.04;margin-top:4px}
+    .cert-status-badge{padding:6px 18px;border-radius:999px;font-size:13px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;background:#E8F1FF;color:#1D4ED8}
     .cert-status-pass{background:#DCFCE7;color:#166534}
-    .cert-status-fail{background:#FEE2E2;color:#B91C1C}
-    .cert-performance{max-width:min(360px,92%);padding:8px 16px;border-radius:999px;background:#FEF3C7;color:#92400E;font-size:13px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;text-align:center}
-    .cert-adjusted-note{font-size:12px;color:#B45309;background:#FFF7ED;border:1px solid #FED7AA;border-radius:999px;padding:7px 12px;text-align:center}
-    .cert-rank{width:min(420px,84%);margin:0 auto 18px;text-align:center;background:#DDBB5E;color:#101821;border-radius:999px;padding:11px;font-size:22px;font-weight:900;letter-spacing:.04em}
-    .cert-details-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:8px}
-    .cert-detail-card{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:14px;padding:14px 16px;min-height:82px}
-    .cert-detail-value{font-size:15px;line-height:1.4;margin-top:10px;color:#202938;word-break:break-word}
-    .cert-detail-subline{font-size:12px;color:#B45309;margin-top:8px}
-    .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:18px;margin:18px auto 6px;max-width:880px;text-align:center;color:#6B7280}
-    .cert-signature-card{padding-top:6px;display:flex;flex-direction:column;align-items:center}
-    .cert-signature-script{width:min(220px,100%);min-height:36px;margin:0 auto -8px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
-    .cert-signature-svg{display:block;width:min(196px,100%);height:42px;overflow:visible}
-    .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 8px;width:min(220px,100%)}
-    .cert-signatory-name{margin:0;font-size:14px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#101821}
-    .cert-signatory-title{margin-top:6px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6B7280}
-    .cert-verification{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:12px 0 8px;padding:10px 14px;border:1px solid #DDE3EA;border-radius:16px;background:#F8FAFC}
+    .cert-status-fail{background:#EFF6FF;color:#DC2626}
+    .cert-adjusted-note{font-size:11px;color:#92400E;background:#FFF7ED;border:1px solid #FED7AA;border-radius:999px;padding:6px 12px;text-align:center}
+    .cert-rank{width:min(440px,92%);margin:2px auto 18px;text-align:center;background:linear-gradient(180deg,#56CCF2 0%,#2F80ED 100%);border:2px solid #2F80ED;color:#ffffff;border-radius:999px;padding:12px 18px;font-size:22px;font-weight:900;letter-spacing:.08em;box-shadow:0 10px 20px rgba(47,128,237,.22)}
+    .cert-details-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:4px}
+    .cert-detail-card{border:2px solid rgba(47,128,237,.34);background:#F8FAFC;border-radius:16px;padding:14px;min-height:96px;display:flex;gap:12px;align-items:flex-start}
+    .cert-detail-icon{width:46px;height:46px;min-width:46px;border-radius:14px;background:#2F80ED;color:#ffffff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(47,128,237,.18)}
+    .cert-detail-icon svg{display:block;width:24px;height:24px}
+    .cert-detail-copy{min-width:0}
+    .cert-detail-value{font-size:16px;line-height:1.45;margin-top:8px;color:#111827;word-break:break-word}
+    .cert-detail-subline{font-size:12px;color:#4B5563;margin-top:6px;line-height:1.45}
+    .cert-signature-block{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;margin:16px auto 12px;color:#1F2937}
+    .cert-signature-script{width:min(220px,100%);min-height:42px;margin:0 auto -6px;display:flex;align-items:flex-end;justify-content:center}
+    .cert-signature-svg{display:block;width:min(196px,100%);height:44px;overflow:visible}
+    .cert-signature-line{width:min(240px,100%);border-top:2px solid #2F80ED;margin:0 auto 8px}
+    .cert-signature-name{font-size:16px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#2F80ED}
+    .cert-signature-role{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#1F2937;margin-top:4px}
+    .cert-verification{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:14px 0 10px;padding:12px 16px;border:2px solid rgba(47,128,237,.34);border-radius:16px;background:#F8FAFC}
     .cert-verification-copy{flex:1;min-width:0}
-    .cert-verification-label{font-size:12px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#0F172A}
-    .cert-verification-qr{width:104px;min-width:104px;height:104px;border-radius:14px;background:#fff;padding:8px;border:1px solid #D1D5DB;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .cert-verification-label{font-size:14px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#2F80ED}
+    .cert-verification-qr{width:104px;min-width:104px;height:104px;border-radius:14px;background:#ffffff;padding:8px;border:1px solid rgba(47,128,237,.25);display:flex;align-items:center;justify-content:center;overflow:hidden}
     .cert-verification-qr svg{display:block;width:100%;height:100%}
     .cert-verification-fallback{font-size:11px;font-weight:700;color:#64748B;text-align:center}
-    .cert-footer{text-align:center;font-weight:900;font-size:15px;margin-top:12px;color:#101821}
-    .cert-footer-sub{text-align:center;color:#6B7280;margin-top:5px}
-    .cert-result .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px}
-    .student-result-full{display:flex;flex-direction:column;gap:12px}
-    .student-topic-card{margin-top:0;background:#F8FAFC;padding:16px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,.05)}
-    .student-topic-card h4{margin:0 0 12px;color:#111827;font-size:16px}
-    .student-topic-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-    .student-topic-item{border:1px solid #E2E8F0;border-radius:12px;background:#fff;padding:12px}
-    .student-topic-item strong{display:block;color:#0F172A;font-size:14px;line-height:1.35}
-    .student-topic-item span{display:block;margin-top:6px;color:#0F766E;font-weight:800}
-    .student-topic-item small{display:block;margin-top:6px;color:#64748B;font-size:12px;line-height:1.45}
-    .student-topic-breakdown-list{display:flex;flex-direction:column;gap:12px}
-    .student-topic-subject-block{background:#fff;border:1px solid #E2E8F0;border-radius:12px;padding:12px}
-    .student-topic-subject-name{display:block;margin-bottom:10px;color:#0F172A}
-    .student-topic-breakdown-table{display:grid;grid-template-columns:minmax(0,2fr) minmax(120px,1fr) minmax(120px,1fr);gap:8px 12px;font-size:13px;align-items:center}
-    .student-topic-breakdown-head{font-weight:800;color:#475569;text-transform:uppercase;font-size:11px;letter-spacing:.06em}
-    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:14px 10px}.cert-top-rule{height:18px}.cert-header{padding:18px 10px 16px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:56px;height:56px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:18px}.cert-platform{font-size:11px;letter-spacing:.14em}.cert-student-name{font-size:28px}.cert-score-ring{width:185px;height:185px;padding:10px}.cert-score-ring-inner{padding:18px}.cert-score-main{font-size:29px}.cert-score-percent{font-size:25px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:20px;width:92%;margin-bottom:18px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-signatures{gap:16px}.cert-signature-script{min-height:30px;margin-bottom:-6px}.cert-signature-svg{height:36px}.cert-verification{flex-direction:row;align-items:center}.student-topic-grid{grid-template-columns:1fr}.student-topic-breakdown-table{grid-template-columns:1fr}.student-topic-breakdown-head{display:none}.cert-footer{font-size:14px}}
-    @media print{.cert-result{box-shadow:none;border-color:#D9B45A}.cert-result .result-actions{display:none!important}}
+    .cert-footer{text-align:center;font-weight:900;font-size:16px;margin-top:12px;color:#2F80ED}
+    .cert-footer-sub{text-align:center;color:#1F2937;margin-top:4px;font-weight:700}
+    .cert-performance-section{border:2px solid rgba(47,128,237,.34);border-radius:18px;background:#ffffff;padding:16px}
+    .cert-performance-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:12px}
+    .cert-performance-list.single{grid-template-columns:minmax(0,1fr)}
+    .cert-performance-card{display:flex;align-items:center;gap:14px;border:2px solid rgba(47,128,237,.22);border-radius:16px;background:#F8FAFC;padding:14px}
+    .cert-performance-icon{width:54px;height:54px;min-width:54px;border-radius:50%;background:#2F80ED;color:#ffffff;display:flex;align-items:center;justify-content:center}
+    .cert-performance-icon svg{display:block;width:28px;height:28px}
+    .cert-performance-copy{min-width:0}
+    .cert-performance-subject{font-size:18px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#2F80ED}
+    .cert-performance-score{font-size:18px;font-weight:900;color:#111827;margin-top:4px}
+    .cert-performance-meta{font-size:13px;color:#1F2937;line-height:1.45;margin-top:4px}
+    .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+    .result-action-note{width:100%;padding:12px 14px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;text-align:left}
+    @media(max-width:720px){
+      .cert-inner{padding:18px 14px 16px}
+      .cert-logo-badge{width:60px;height:60px;border-radius:18px}
+      .cert-logo-badge span{font-size:24px}
+      .cert-logo-text{text-align:center}
+      .cert-logo-text strong{font-size:22px}
+      .cert-quiz-title{font-size:30px}
+      .cert-section-ribbon{font-size:13px;padding:8px 14px}
+      .cert-section-ribbon:before,.cert-section-ribbon:after{width:36px}
+      .cert-student-name{font-size:38px}
+      .cert-score-ring{width:190px;height:190px}
+      .cert-score-main{font-size:40px}
+      .cert-score-percent{font-size:30px}
+      .cert-rank{font-size:20px}
+      .cert-details-grid{grid-template-columns:1fr}
+      .cert-verification{flex-direction:column;align-items:flex-start}
+    }
+    @media print{.cert-result{box-shadow:none}.result-actions{display:none!important}}
   `;
 }
 
@@ -6486,12 +6712,16 @@ function buildStudentSummaryPdfHtml(quiz, submission) {
   const rankValue = ranks[normalizeEmail(submission.email)] || '-';
   const resultHtml = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false });
   return `
-    <div class="student-result-export-page" style="font-family:Inter,Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
+    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
       <style>
         ${getCertificateResultCss()}
-        .student-result-export-page{width:100%;max-width:746px;margin:0 auto}
-        .student-result-export-page .student-result-full{page-break-inside:avoid;break-inside:avoid}
-        .student-result-export-page .student-topic-card{margin-top:12px;padding:14px;border:1px solid #E5E7EB;box-shadow:none}
+        .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
+        .student-result-export-page .student-result-full{gap:10px}
+        .student-result-export-page .cert-result{box-shadow:none;border-radius:0}
+        .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
+        .student-result-export-page .cert-quiz-title{font-size:32px}
+        .student-result-export-page .cert-student-name{font-size:40px}
+        .student-result-export-page .cert-performance-section{page-break-inside:avoid;break-inside:avoid}
       </style>
       ${resultHtml}
     </div>
@@ -6503,17 +6733,20 @@ function printStudentSummary(quiz, submission) {
   const rankValue = ranks[normalizeEmail(submission.email)] || '-';
   const html = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false });
   const printHtml = `
-    <div class="student-result-export-page" style="font-family:Inter,Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
+    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
       <style>
         ${getCertificateResultCss()}
-        .student-result-export-page{width:100%;max-width:746px;margin:0 auto}
-        .student-result-export-page .student-result-full{page-break-inside:avoid;break-inside:avoid}
-        .student-result-export-page .student-topic-card{margin-top:12px;padding:14px;border:1px solid #E5E7EB;box-shadow:none}
+        .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
+        .student-result-export-page .student-result-full{gap:10px}
+        .student-result-export-page .cert-result{box-shadow:none;border-radius:0}
+        .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
+        .student-result-export-page .cert-quiz-title{font-size:32px}
+        .student-result-export-page .cert-student-name{font-size:40px}
       </style>
       ${html}
     </div>
   `;
-  printHtmlAsSinglePage(printHtml, { title: 'Student Result Summary', paddingPx: 10 })
+  printHtmlAsSinglePage(printHtml, { title: 'Student Result Summary', paddingPx: 0 })
     .catch(() => showNotification('Unable to open print window', 'error'));
 }
 
@@ -6782,7 +7015,6 @@ function renderResultsView() {
           if (!s) return showNotification('Submission not found', 'error');
           const quiz = getAllQuizzes()[quizId] || {};
           await downloadCorrectionPdfFast(s, quiz, { showNegativePenalty: true });
-          showNotification('Student correction PDF downloaded', 'success');
           s._correctionDownloaded = true;
           s.correctionDownloadedAt = new Date().toISOString();
           s.updatedAt = new Date().toISOString();
@@ -6997,17 +7229,17 @@ function showExamAnalysisModal(q) {
       XLSX.writeFile(wb, `${makeSafeFilenamePart(selectedSubject, 'subject')} FACILITY INDEX (${q.id}).xlsx`);
       showNotification('Facility index Excel exported', 'success');
     };
-    document.getElementById('btnAnalysisExportPDF').onclick = () => {
+    document.getElementById('btnAnalysisExportPDF').onclick = async () => {
       try {
         const visibleData = data.filter((item) => (item.subject || 'General') === selectedSubject);
-        downloadFacilityIndexPdfText(q, visibleData, { subjectName: selectedSubject }).then(() => showNotification('Facility index PDF downloaded', 'success'));
+        await downloadFacilityIndexPdfText(q, visibleData, { subjectName: selectedSubject });
       } catch(e) { console.error(e); showNotification('Error exporting PDF', 'error'); }
     };
     const exportAllBtn = document.getElementById('btnAnalysisExportAllPDF');
     if (exportAllBtn) exportAllBtn.onclick = async () => {
       for (const subjectName of subjectNames) {
         const visibleData = data.filter((item) => (item.subject || 'General') === subjectName);
-        await downloadFacilityIndexPdfText(q, visibleData, { subjectName });
+        await downloadFacilityIndexPdfText(q, visibleData, { subjectName, successMessage: '' });
       }
       showNotification('All subject facility index PDFs downloaded', 'success');
     };
@@ -8113,7 +8345,7 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
       buildStudentSummaryPdfHtml(quiz, s),
       getStudentResultPdfFilename(s, id),
       'Student result summary PDF downloaded',
-      { singlePage: true, marginMm: 6, paddingPx: 10 }
+      { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3 }
     );
   };
   const requestBtn = document.getElementById('requestCorrectionBtn');
@@ -8130,6 +8362,19 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
     printStudentSummary(quiz, s);
   };
   return s;
+}
+
+async function showStudentResultModalByShareKey(shareKey, includeActions = true, options = {}) {
+  const key = (shareKey || '').trim().toLowerCase();
+  if (!key) return showNotification('Result link is incomplete', 'error');
+  if (canUseNetworkSync()) await pullNetworkState(true);
+  const matches = getAllSubmissions().filter((item) => {
+    const candidate = (item.shareKey || buildSubmissionShareKeyCandidate(item)).toString().trim().toLowerCase();
+    return candidate === key;
+  });
+  if (!matches.length) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
+  const submission = matches.slice().sort(sortSubmissionRecords)[matches.length - 1];
+  return showStudentResultModalBySubmissionKey(submission.quizId, submission.submissionId || buildSubmissionIdentity(submission), includeActions, options);
 }
 
 async function showStudentResultModalBySubmissionKey(quizId, submissionKey, includeActions = true, options = {}) {
@@ -8160,7 +8405,7 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
       buildStudentSummaryPdfHtml(quiz, submission),
       getStudentResultPdfFilename(submission, id),
       'Student result summary PDF downloaded',
-      { singlePage: true, marginMm: 6, paddingPx: 10 }
+      { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3 }
     );
   };
   const requestBtn = document.getElementById('requestCorrectionBtn');
@@ -8177,7 +8422,6 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
     printStudentSummary(quiz, submission);
   };
   if (options.autoDownloadCorrection) {
-    const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: options.correctionSubject || '' });
     setTimeout(async () => {
       try {
         await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true, subjectName: options.correctionSubject || '' });
@@ -8190,7 +8434,6 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
         submission.correctionStatus = 'downloaded';
         submission.correctionDownloadedAt = downloadedAt;
         submission._correctionDownloaded = true;
-        showNotification(correctionView.subjectName ? `${correctionView.subjectName} correction PDF downloaded` : 'Correction PDF downloaded', 'success', 6000);
       } catch (error) {
         console.error(error);
         showNotification('Error preparing correction PDF', 'error');
@@ -8587,6 +8830,7 @@ function collectAndSubmit() {
     sub.timeSpent = sub.startedAt ? (Date.now() - new Date(sub.startedAt).getTime())/1000 : 0;
     sub.submittedAt = new Date().toISOString();
     sub.submissionId = buildSubmissionIdentity(sub);
+    sub.shareKey = getSubmissionShareKey(sub, { persist: false });
     const allSubs = getAllSubmissions(); allSubs.push(sub); saveAllSubmissions(allSubs);
     clearExamDraft(sub.quizId, sub.email);
     showNotification('Submission saved  ','success');
