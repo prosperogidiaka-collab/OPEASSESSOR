@@ -4,6 +4,9 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawn } = require('child_process');
+const { randomUUID } = require('crypto');
+const { pathToFileURL } = require('url');
 
 const { VALID_STATE_KEYS, createStateStore } = require('./state-store');
 
@@ -26,6 +29,9 @@ const STORAGE_BACKEND = (process.env.STORAGE_BACKEND || 'file').trim();
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 const SUPABASE_TABLE_PREFIX = (process.env.SUPABASE_TABLE_PREFIX || 'ope_').trim();
+const PDF_BROWSER_PATH = (process.env.PDF_BROWSER_PATH || '').trim();
+const PDF_EXPORT_TIMEOUT_MS = Number(process.env.PDF_EXPORT_TIMEOUT_MS || 45000);
+const PDF_EXPORT_TEMP_DIR = path.join(ROOT, '.pdf-export-cache');
 
 const stateStore = createStateStore({
   storageBackend: STORAGE_BACKEND,
@@ -73,7 +79,7 @@ function buildResponseHeaders(req, type, extraHeaders = {}) {
   const corsOrigin = getCorsOrigin(req);
   if (corsOrigin) {
     headers['Access-Control-Allow-Origin'] = corsOrigin;
-    headers['Access-Control-Allow-Methods'] = 'GET, PUT, OPTIONS';
+    headers['Access-Control-Allow-Methods'] = 'GET, PUT, POST, OPTIONS';
     headers['Access-Control-Allow-Headers'] = 'Content-Type';
     headers['Vary'] = headers['Vary'] ? `${headers['Vary']}, Origin` : 'Origin';
   }
@@ -161,6 +167,172 @@ function readRequestBody(req) {
   });
 }
 
+function normalizeClientIp(value = '') {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '';
+  if (raw === '::1') return '127.0.0.1';
+  if (raw.startsWith('::ffff:')) return raw.slice(7);
+  return raw;
+}
+
+function getClientIp(req) {
+  const forwarded = (req.headers['x-forwarded-for'] || '').toString().split(',').map((part) => normalizeClientIp(part)).filter(Boolean);
+  if (forwarded.length) return forwarded[0];
+  return normalizeClientIp(
+    req.headers['x-real-ip']
+      || req.socket?.remoteAddress
+      || req.connection?.remoteAddress
+      || ''
+  );
+}
+
+function getPdfBrowserCandidates() {
+  return [
+    PDF_BROWSER_PATH,
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+  ].filter(Boolean);
+}
+
+function findPdfBrowserPath() {
+  const resolved = getPdfBrowserCandidates().find((candidate) => {
+    try {
+      return candidate && fs.existsSync(candidate);
+    } catch (error) {
+      return false;
+    }
+  });
+  if (!resolved) {
+    throw new Error('No Chromium-based browser was found for PDF export. Set PDF_BROWSER_PATH in the server environment.');
+  }
+  return resolved;
+}
+
+function sanitizePdfFilename(value = '') {
+  const cleaned = (value || 'ope-export.pdf').toString().trim().replace(/[\\/:*?"<>|]+/g, '-');
+  return cleaned.toLowerCase().endsWith('.pdf') ? cleaned : `${cleaned || 'ope-export'}.pdf`;
+}
+
+function buildPdfDocumentHtml(html, options = {}) {
+  const title = escapeHtmlAttr(options.title || 'OPE Assessor PDF Export');
+  const orientation = (options.orientation || 'portrait').toString().trim().toLowerCase() === 'landscape' ? 'landscape' : 'portrait';
+  const margins = options.margins && typeof options.margins === 'object' ? options.margins : {};
+  const top = Number(margins.top) >= 0 ? Number(margins.top) : 10;
+  const right = Number(margins.right) >= 0 ? Number(margins.right) : 10;
+  const bottom = Number(margins.bottom) >= 0 ? Number(margins.bottom) : 10;
+  const left = Number(margins.left) >= 0 ? Number(margins.left) : 10;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    html, body { margin: 0; padding: 0; background: #ffffff; color: #0B1220; font-family: "Segoe UI", Arial, sans-serif; }
+    body { width: 100%; overflow: visible; }
+    #pdf-container {
+      width: 794px;
+      min-height: 1123px;
+      background: white;
+      overflow: visible;
+      margin: 0 auto;
+    }
+    img, svg, canvas { max-width: 100%; }
+    .pdf-card, .avoid-break, .pdf-question-card, .pdf-summary-card, .pdf-meta-card, .facility-question-card, .facility-summary-card, .summary-row {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    @page {
+      size: A4 ${orientation};
+      margin: ${top}mm ${right}mm ${bottom}mm ${left}mm;
+    }
+    @media print {
+      body { background: white; }
+      #pdf-container {
+        width: 210mm;
+        min-height: 297mm;
+        overflow: visible;
+        page-break-inside: auto;
+      }
+      .pdf-card, .avoid-break, .pdf-question-card, .pdf-summary-card, .pdf-meta-card, .facility-question-card, .facility-summary-card, .summary-row {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="pdf-container">${html || ''}</div>
+</body>
+</html>`;
+}
+
+function renderPdfWithHeadlessBrowser(html, options = {}) {
+  const browserPath = findPdfBrowserPath();
+  fs.mkdirSync(PDF_EXPORT_TEMP_DIR, { recursive: true });
+  const jobId = randomUUID();
+  const jobDir = path.join(PDF_EXPORT_TEMP_DIR, jobId);
+  const sourcePath = path.join(jobDir, 'source.html');
+  const pdfPath = path.join(jobDir, 'export.pdf');
+  fs.mkdirSync(jobDir, { recursive: true });
+  fs.writeFileSync(sourcePath, buildPdfDocumentHtml(html, options), 'utf8');
+
+  return new Promise((resolve, reject) => {
+    const args = [
+      '--headless=new',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--allow-file-access-from-files',
+      '--run-all-compositor-stages-before-draw',
+      '--virtual-time-budget=12000',
+      '--no-pdf-header-footer',
+      `--print-to-pdf=${pdfPath}`,
+      pathToFileURL(sourcePath).toString()
+    ];
+    const child = spawn(browserPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    let stdout = '';
+    let finished = false;
+    const finalize = (callback) => {
+      if (finished) return;
+      finished = true;
+      try { callback(); }
+      finally {
+        try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch (error) {}
+      }
+    };
+    const timeout = setTimeout(() => {
+      try { child.kill(); } catch (error) {}
+      finalize(() => reject(new Error('PDF export timed out while rendering the page.')));
+    }, Math.max(10000, PDF_EXPORT_TIMEOUT_MS));
+
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      clearTimeout(timeout);
+      finalize(() => reject(error));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        finalize(() => reject(new Error(stderr || stdout || `PDF export failed with exit code ${code}`)));
+        return;
+      }
+      try {
+        const buffer = fs.readFileSync(pdfPath);
+        finalize(() => resolve(buffer));
+      } catch (error) {
+        finalize(() => reject(new Error(`PDF export completed but the PDF file could not be read. ${error.message}`)));
+      }
+    });
+  });
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const route = url.pathname;
@@ -180,6 +352,14 @@ async function handleApi(req, res) {
       storageDetails: stateStore.details,
       maxBodyBytes: MAX_BODY_BYTES,
       allowedOrigins: ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : ['same-origin only']
+    });
+  }
+
+  if (route === '/api/client-context' && req.method === 'GET') {
+    return sendJson(req, res, 200, {
+      ipAddress: getClientIp(req),
+      userAgent: (req.headers['user-agent'] || '').toString(),
+      requestedAt: new Date().toISOString()
     });
   }
 
@@ -220,6 +400,24 @@ async function handleApi(req, res) {
         const isBodyError = message === 'Missing value' || message === 'Payload too large' || /JSON/i.test(message);
         return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
       }
+    }
+  }
+
+  if (route === '/api/export/pdf' && req.method === 'POST') {
+    try {
+      const body = await readRequestBody(req);
+      const parsed = JSON.parse(body || '{}');
+      const html = typeof parsed.html === 'string' ? parsed.html : '';
+      if (!html.trim()) return sendJson(req, res, 400, { error: 'Missing html' });
+      const filename = sanitizePdfFilename(parsed.filename || 'ope-export.pdf');
+      const pdfBuffer = await renderPdfWithHeadlessBrowser(html, parsed.options || {});
+      return send(req, res, 200, pdfBuffer, 'application/pdf', {
+        'Content-Disposition': `${parsed.inline ? 'inline' : 'attachment'}; filename="${escapeHtmlAttr(filename)}"`
+      });
+    } catch (error) {
+      const message = error.message || 'Unable to generate PDF';
+      const isBodyError = message === 'Missing html' || message === 'Payload too large' || /JSON/i.test(message);
+      return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
     }
   }
 

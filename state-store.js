@@ -5,7 +5,8 @@ const DEFAULT_STATE = {
   quizzes: {},
   submissions: [],
   teachers: {},
-  students: {}
+  students: {},
+  tokenTransactions: []
 };
 
 const VALID_STATE_KEYS = Object.keys(DEFAULT_STATE);
@@ -31,9 +32,17 @@ function toIsoOrNull(value) {
 }
 
 function recordStamp(item) {
-  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
+  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.submittedAt || item.uploadedAt || item.tokenUpdatedAt || item.tokenRequestedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
   const stamp = raw ? new Date(raw).getTime() : 0;
   return Number.isFinite(stamp) ? stamp : 0;
+}
+
+function teacherAccessStamp(item = {}) {
+  return Math.max(
+    item && item.licenseUpdatedAt ? new Date(item.licenseUpdatedAt).getTime() : 0,
+    item && item.tokenUpdatedAt ? new Date(item.tokenUpdatedAt).getTime() : 0,
+    item && item.tokenRequestedAt ? new Date(item.tokenRequestedAt).getTime() : 0
+  );
 }
 
 function submissionKey(item, index = 0) {
@@ -46,6 +55,14 @@ function submissionKey(item, index = 0) {
 
 function studentKey(item, index = 0) {
   return ((item && (item.email || item.registrationNo || item.id || item.name)) || `student-${index}`).toString().trim().toLowerCase();
+}
+
+function tokenTransactionKey(item, index = 0) {
+  if (item && item.id) return normalizeKey(item.id, `txn-${index}`);
+  const userId = normalizeLowerKey(item && item.userId, 'teacher');
+  const type = normalizeKey(item && item.type, 'transaction');
+  const stamp = item && (item.createdAt || item.updatedAt) || `idx-${index}`;
+  return `${userId}::${type}::${stamp}`;
 }
 
 function mergeStudentLists(currentList = [], incomingList = []) {
@@ -79,10 +96,10 @@ function mergeTeacherRecord(currentItem = {}, incomingItem = {}) {
   const currentStamp = recordStamp(currentItem);
   const incomingStamp = recordStamp(incomingItem);
   const base = incomingStamp >= currentStamp ? { ...(currentItem || {}), ...(incomingItem || {}) } : { ...(incomingItem || {}), ...(currentItem || {}) };
-  const currentLicenseStamp = currentItem && currentItem.licenseUpdatedAt ? new Date(currentItem.licenseUpdatedAt).getTime() : 0;
-  const incomingLicenseStamp = incomingItem && incomingItem.licenseUpdatedAt ? new Date(incomingItem.licenseUpdatedAt).getTime() : 0;
-  const licenseSource = incomingLicenseStamp >= currentLicenseStamp ? incomingItem : currentItem;
-  ['licenseEndsAt', 'licenseStopped', 'licenseRequestStatus', 'licenseUpdatedAt'].forEach((field) => {
+  const currentAccessStamp = teacherAccessStamp(currentItem);
+  const incomingAccessStamp = teacherAccessStamp(incomingItem);
+  const licenseSource = incomingAccessStamp >= currentAccessStamp ? incomingItem : currentItem;
+  ['licenseEndsAt', 'licenseStopped', 'licenseRequestStatus', 'licenseUpdatedAt', 'tokenBalance', 'unlimitedExpiresAt', 'unlimitedDeviceId', 'tokenRequestStatus', 'tokenRequestedAt', 'tokenRequestedPackageKey', 'tokenRequestedAmount', 'tokenRequestedTokens', 'tokenRequestedDeviceId', 'lastUnlimitedDeviceTransferAt', 'tokenUpdatedAt'].forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(licenseSource || {}, field)) base[field] = licenseSource[field];
   });
   return base;
@@ -115,8 +132,27 @@ function mergeSubmissionLists(currentList, incomingList) {
   });
 }
 
+function mergeTokenTransactionLists(currentList, incomingList) {
+  const merged = new Map();
+  const add = (item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const normalized = item.id ? item : { ...item, id: tokenTransactionKey(item, index) };
+    const key = tokenTransactionKey(normalized, index);
+    const current = merged.get(key);
+    if (!current || recordStamp(normalized) >= recordStamp(current)) merged.set(key, normalized);
+  };
+  (currentList || []).forEach(add);
+  (incomingList || []).forEach(add);
+  return Array.from(merged.values()).sort((a, b) => {
+    const left = new Date(a.createdAt || a.updatedAt || 0).getTime();
+    const right = new Date(b.createdAt || b.updatedAt || 0).getTime();
+    return left - right;
+  });
+}
+
 function mergeStateValue(stateKey, currentValue, incomingValue) {
   if (stateKey === 'submissions') return mergeSubmissionLists(currentValue || [], incomingValue || []);
+  if (stateKey === 'tokenTransactions') return mergeTokenTransactionLists(currentValue || [], incomingValue || []);
   if (stateKey === 'teachers') return mergeTeacherMaps(currentValue || {}, incomingValue || {});
   if (stateKey === 'quizzes' || stateKey === 'students') return mergeRecordMaps(currentValue || {}, incomingValue || {});
   return incomingValue;
@@ -138,7 +174,8 @@ function readJsonFile(filePath) {
       quizzes: parsed.quizzes || {},
       submissions: parsed.submissions || [],
       teachers: parsed.teachers || {},
-      students: parsed.students || {}
+      students: parsed.students || {},
+      tokenTransactions: parsed.tokenTransactions || []
     };
   } catch (error) {
     fs.writeFileSync(filePath, JSON.stringify(DEFAULT_STATE, null, 2));
@@ -195,7 +232,8 @@ function buildSupabaseTableNames(prefix) {
     quizzes: `${prefix}quizzes`,
     submissions: `${prefix}submissions`,
     teachers: `${prefix}teachers`,
-    students: `${prefix}students`
+    students: `${prefix}students`,
+    tokenTransactions: `${prefix}token_transactions`
   };
 }
 
@@ -253,6 +291,17 @@ function buildSubmissionRows(stateValue) {
     submitted_at: toIsoOrNull(item && item.submittedAt),
     updated_at: toIsoOrNull(item && (item.updatedAt || item.submittedAt || item.startedAt || item.createdAt)),
     payload: { ...(item || {}), submissionId: submissionKey(item, index) }
+  }));
+}
+
+function buildTokenTransactionRows(stateValue) {
+  return (stateValue || []).map((item, index) => ({
+    transaction_id: tokenTransactionKey(item, index),
+    user_id: normalizeLowerKey(item && item.userId),
+    type: normalizeKey(item && item.type),
+    created_at: toIsoOrNull(item && item.createdAt),
+    updated_at: toIsoOrNull(item && (item.updatedAt || item.createdAt)),
+    payload: { ...(item || {}), id: tokenTransactionKey(item, index) }
   }));
 }
 
@@ -321,6 +370,22 @@ function rowsToSubmissionList(rows) {
   });
 }
 
+function rowsToTokenTransactionList(rows) {
+  return (rows || []).map((row) => {
+    const payload = isObject(row.payload) ? { ...row.payload } : {};
+    if (!payload.id && row.transaction_id) payload.id = row.transaction_id;
+    if (!payload.userId && row.user_id) payload.userId = row.user_id;
+    if (!payload.type && row.type) payload.type = row.type;
+    if (!payload.createdAt && row.created_at) payload.createdAt = row.created_at;
+    if (!payload.updatedAt && row.updated_at) payload.updatedAt = row.updated_at;
+    return payload;
+  }).sort((a, b) => {
+    const left = new Date(a.createdAt || a.updatedAt || 0).getTime();
+    const right = new Date(b.createdAt || b.updatedAt || 0).getTime();
+    return left - right;
+  });
+}
+
 function createSupabaseStateStore(options) {
   const supabaseUrl = (options.supabaseUrl || '').trim();
   const supabaseServiceRoleKey = (options.supabaseServiceRoleKey || '').trim();
@@ -381,6 +446,10 @@ function createSupabaseStateStore(options) {
     return rowsToSubmissionList(await selectAllRows(tables.submissions, '*', [{ column: 'submitted_at' }, { column: 'submission_id' }]));
   }
 
+  async function loadTokenTransactionList() {
+    return rowsToTokenTransactionList(await selectAllRows(tables.tokenTransactions, '*', [{ column: 'created_at' }, { column: 'transaction_id' }]));
+  }
+
   async function persistStateValue(stateKey, nextValue) {
     if (stateKey === 'quizzes') {
       const rows = Object.keys(nextValue || {}).map((id) => buildQuizRow(id, nextValue[id]));
@@ -402,6 +471,11 @@ function createSupabaseStateStore(options) {
       await upsertRows(tables.submissions, rows, 'submission_id');
       return;
     }
+    if (stateKey === 'tokenTransactions') {
+      const rows = buildTokenTransactionRows(nextValue);
+      await upsertRows(tables.tokenTransactions, rows, 'transaction_id');
+      return;
+    }
     throw new Error(`Unsupported state key: ${stateKey}`);
   }
 
@@ -412,19 +486,21 @@ function createSupabaseStateStore(options) {
       tables
     },
     async getState() {
-      const [quizzes, submissions, teachers, students] = await Promise.all([
+      const [quizzes, submissions, teachers, students, tokenTransactions] = await Promise.all([
         loadQuizzesMap(),
         loadSubmissionList(),
         loadTeachersMap(),
-        loadStudentsMap()
+        loadStudentsMap(),
+        loadTokenTransactionList()
       ]);
-      return { quizzes, submissions, teachers, students };
+      return { quizzes, submissions, teachers, students, tokenTransactions };
     },
     async getStateValue(stateKey) {
       if (stateKey === 'quizzes') return loadQuizzesMap();
       if (stateKey === 'submissions') return loadSubmissionList();
       if (stateKey === 'teachers') return loadTeachersMap();
       if (stateKey === 'students') return loadStudentsMap();
+      if (stateKey === 'tokenTransactions') return loadTokenTransactionList();
       throw new Error(`Unsupported state key: ${stateKey}`);
     },
     async putStateValue(stateKey, incomingValue) {

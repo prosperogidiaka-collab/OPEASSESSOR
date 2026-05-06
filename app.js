@@ -13,6 +13,7 @@ const STORAGE_KEYS = {
   submissions: 'ope_submissions_v2',
   teacherId: 'ope_teacher_id',
   teachers: 'ope_teachers_v1',
+  tokenTransactions: 'ope_token_transactions_v1',
   teacherSession: 'ope_teacher_session_v1',
   students: 'ope_teacher_students_v1',
   appState: 'ope_app_state_v1'
@@ -21,13 +22,15 @@ const NETWORK_SYNC_KEYS = [
   STORAGE_KEYS.quizzes,
   STORAGE_KEYS.submissions,
   STORAGE_KEYS.teachers,
-  STORAGE_KEYS.students
+  STORAGE_KEYS.students,
+  STORAGE_KEYS.tokenTransactions
 ];
 const NETWORK_STATE_KEY_MAP = {
   [STORAGE_KEYS.quizzes]: 'quizzes',
   [STORAGE_KEYS.submissions]: 'submissions',
   [STORAGE_KEYS.teachers]: 'teachers',
-  [STORAGE_KEYS.students]: 'students'
+  [STORAGE_KEYS.students]: 'students',
+  [STORAGE_KEYS.tokenTransactions]: 'tokenTransactions'
 };
 const DEFAULT_NETWORK_SYNC_POLL_MS = 5000;
 const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
@@ -35,17 +38,16 @@ const DEFAULT_SUPPORT_SETTINGS = {
   email: ADMIN_CONTACT_EMAIL,
   whatsapp: ''
 };
-const DEFAULT_LICENSE_PRICING = {
-  daily: '',
-  weekly: '',
-  monthly: '',
-  yearly: ''
-};
-const LICENSE_PLAN_DAYS = {
-  daily: 1,
-  weekly: 7,
-  monthly: 30,
-  yearly: 365
+const APP_DEVICE_ID_KEY = 'ope_app_device_id_v1';
+const TOKEN_PRICE_PER_QUIZ = 1000;
+const TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS = 30;
+const TOKEN_PACKAGE_DEFINITIONS = {
+  single: { key: 'single', label: 'Single', tokens: 1, price: 1000, useCase: 'One-off' },
+  starter: { key: 'starter', label: 'Starter', tokens: 3, price: 2700, useCase: 'Save ₦300' },
+  standard: { key: 'standard', label: 'Standard', tokens: 7, price: 6000, useCase: 'Save ₦1,000' },
+  pro: { key: 'pro', label: 'Pro', tokens: 15, price: 12000, useCase: 'Save ₦3,000' },
+  school: { key: 'school', label: 'School', tokens: 50, price: 35000, useCase: 'Save ₦15,000' },
+  'unlimited-3mo': { key: 'unlimited-3mo', label: '3-Month Unlimited', tokens: 0, price: 50000, unlimitedDays: 90, useCase: 'Unlimited quiz saving for 3 months on one registered device' }
 };
 
 function normalizeApiBaseUrl(value) {
@@ -70,6 +72,21 @@ function buildApiUrl(path) {
   return NETWORK_SYNC_CONFIG.apiBaseUrl
     ? `${NETWORK_SYNC_CONFIG.apiBaseUrl}${normalizedPath}`
     : normalizedPath;
+}
+
+function getAppDeviceId() {
+  try {
+    let existing = localStorage.getItem(APP_DEVICE_ID_KEY) || '';
+    existing = existing.toString().trim();
+    if (existing) return existing;
+    const generated = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `device-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(APP_DEVICE_ID_KEY, generated);
+    return generated;
+  } catch (error) {
+    return `device-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
 }
 
 function getTeacherId() {
@@ -317,9 +334,17 @@ function isEmptySharedValue(value) {
 }
 
 function getRecordStamp(item) {
-  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.shareKeyUpdatedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
+  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.shareKeyUpdatedAt || item.submittedAt || item.uploadedAt || item.tokenUpdatedAt || item.tokenRequestedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
   const stamp = raw ? new Date(raw).getTime() : 0;
   return Number.isFinite(stamp) ? stamp : 0;
+}
+
+function getTeacherAccessStamp(item = {}) {
+  return Math.max(
+    item?.licenseUpdatedAt ? new Date(item.licenseUpdatedAt).getTime() : 0,
+    item?.tokenUpdatedAt ? new Date(item.tokenUpdatedAt).getTime() : 0,
+    item?.tokenRequestedAt ? new Date(item.tokenRequestedAt).getTime() : 0
+  );
 }
 
 function buildSubmissionIdentity(item, index = 0) {
@@ -407,6 +432,26 @@ function mergeSubmissionRecordsForSync(primaryList = [], secondaryList = []) {
   return Array.from(merged.values()).sort(sortSubmissionRecords);
 }
 
+function sortTokenTransactions(left, right) {
+  const leftStamp = new Date(left?.createdAt || left?.updatedAt || 0).getTime();
+  const rightStamp = new Date(right?.createdAt || right?.updatedAt || 0).getTime();
+  return leftStamp - rightStamp;
+}
+
+function mergeTokenTransactionsForSync(primaryList = [], secondaryList = []) {
+  const merged = new Map();
+  const add = (item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const normalized = item.id ? item : { ...item, id: `txn_${Date.now().toString(36)}_${index}` };
+    const key = normalized.id;
+    const current = merged.get(key);
+    if (!current || getRecordStamp(normalized) >= getRecordStamp(current)) merged.set(key, normalized);
+  };
+  primaryList.forEach(add);
+  secondaryList.forEach(add);
+  return Array.from(merged.values()).sort(sortTokenTransactions);
+}
+
 function confirmTeacherAction(message) {
   return window.confirm(message);
 }
@@ -439,38 +484,162 @@ function getSupportSettings() {
   };
 }
 
-function getLicensePricingSettings() {
-  const admin = getAllTeachers()[normalizeEmail(SUPER_ADMIN_EMAIL)] || {};
-  const pricing = admin.licensePricing && typeof admin.licensePricing === 'object' ? admin.licensePricing : {};
+function formatNaira(value = 0) {
+  const amount = Math.max(0, Number(value) || 0);
+  return `₦${amount.toLocaleString('en-NG')}`;
+}
+
+function getTokenPackageCatalog() {
+  return Object.values(TOKEN_PACKAGE_DEFINITIONS).map((item) => ({
+    ...item,
+    effectivePrice: item.tokens > 0 ? Math.round(item.price / item.tokens) : 0
+  }));
+}
+
+function getTokenPackageByKey(packageKey = '') {
+  return TOKEN_PACKAGE_DEFINITIONS[(packageKey || '').toString().trim().toLowerCase()] || null;
+}
+
+function formatLicensePlanLabel(planKey = '') {
+  const tokenPackage = getTokenPackageByKey(planKey);
+  return tokenPackage ? tokenPackage.label : 'Token Package';
+}
+
+function buildLicensePricingListMarkup() {
+  return getTokenPackageCatalog().map((tokenPackage) => {
+    if (tokenPackage.unlimitedDays) {
+      return `<li><strong>${escapeHtml(tokenPackage.label)}</strong>: ${formatNaira(tokenPackage.price)} for ${tokenPackage.unlimitedDays} days on one registered device</li>`;
+    }
+    return `<li><strong>${escapeHtml(tokenPackage.label)}</strong>: ${tokenPackage.tokens} Token${tokenPackage.tokens === 1 ? '' : 's'} • ${formatNaira(tokenPackage.price)} • ${formatNaira(tokenPackage.effectivePrice)} per quiz</li>`;
+  }).join('');
+}
+
+function getLicensePlanDurationDays(planKey = '') {
+  const tokenPackage = getTokenPackageByKey(planKey);
+  return tokenPackage && tokenPackage.unlimitedDays ? tokenPackage.unlimitedDays : 0;
+}
+
+function getTeacherTokenBalance(teacher = getCurrentTeacher()) {
+  return Math.max(0, parseInt(teacher?.tokenBalance || 0, 10) || 0);
+}
+
+function getUnlimitedDaysLeft(teacher = getCurrentTeacher()) {
+  const stamp = teacher?.unlimitedExpiresAt ? new Date(teacher.unlimitedExpiresAt).getTime() : 0;
+  if (!stamp || Number.isNaN(stamp) || stamp <= Date.now()) return 0;
+  return Math.max(1, Math.ceil((stamp - Date.now()) / (24 * 60 * 60 * 1000)));
+}
+
+function isUnlimitedActiveForTeacher(teacher = getCurrentTeacher()) {
+  return getUnlimitedDaysLeft(teacher) > 0;
+}
+
+function isUnlimitedActiveOnCurrentDevice(teacher = getCurrentTeacher()) {
+  if (!isUnlimitedActiveForTeacher(teacher)) return false;
+  const expectedDeviceId = (teacher?.unlimitedDeviceId || '').toString().trim();
+  return !expectedDeviceId || expectedDeviceId === getAppDeviceId();
+}
+
+function getTeacherPurchaseSummary(teacher = getCurrentTeacher()) {
+  const tokenBalance = getTeacherTokenBalance(teacher);
+  const unlimitedDays = getUnlimitedDaysLeft(teacher);
+  if (unlimitedDays > 0 && isUnlimitedActiveOnCurrentDevice(teacher)) {
+    return `Tokens: ${tokenBalance} | Unlimited: ${unlimitedDays} day${unlimitedDays === 1 ? '' : 's'} left`;
+  }
+  if (unlimitedDays > 0) {
+    return `Tokens: ${tokenBalance} | Unlimited: active on another device`;
+  }
+  return `Tokens: ${tokenBalance}`;
+}
+
+function buildTokenTransaction(type, amount, description, extra = {}) {
+  const userId = normalizeEmail(extra.userId || state.teacherId || '');
+  const createdAt = extra.createdAt || new Date().toISOString();
   return {
-    daily: (pricing.daily || DEFAULT_LICENSE_PRICING.daily || '').toString().trim(),
-    weekly: (pricing.weekly || DEFAULT_LICENSE_PRICING.weekly || '').toString().trim(),
-    monthly: (pricing.monthly || DEFAULT_LICENSE_PRICING.monthly || '').toString().trim(),
-    yearly: (pricing.yearly || DEFAULT_LICENSE_PRICING.yearly || '').toString().trim()
+    id: extra.id || `txn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    userId,
+    type,
+    amount,
+    description,
+    createdAt,
+    updatedAt: extra.updatedAt || createdAt,
+    packageKey: extra.packageKey || '',
+    nairaAmount: Number(extra.nairaAmount || 0) || 0,
+    quizId: extra.quizId || '',
+    quizTitle: extra.quizTitle || '',
+    deviceId: extra.deviceId || '',
+    metadata: extra.metadata && typeof extra.metadata === 'object' ? { ...extra.metadata } : {}
   };
 }
 
-function saveLicensePricingSettings(nextPricing = {}) {
+function appendTokenTransaction(transaction) {
+  const current = getAllTokenTransactions();
+  current.push(transaction);
+  saveAllTokenTransactions(current);
+  return transaction;
+}
+
+function getTeacherTokenTransactions(teacherId = state.teacherId) {
+  const normalizedTeacherId = normalizeEmail(teacherId);
+  return getAllTokenTransactions().filter((item) => normalizeEmail(item.userId) === normalizedTeacherId);
+}
+
+function buildTokenInsufficientMessage(teacher = getCurrentTeacher()) {
+  const status = getTeacherLicenseStatus(teacher);
+  return status.wrongDevice
+    ? `Your unlimited plan is on another device. Use 1 Token ${formatNaira(TOKEN_PRICE_PER_QUIZ)} to continue here.`
+    : `Insufficient Tokens. 1 Token = ${formatNaira(TOKEN_PRICE_PER_QUIZ)}. Buy Tokens.`;
+}
+
+function consumeTeacherAccessForQuizSave({ teacherId = state.teacherId, quizId = '', quizTitle = '', isEditingExisting = false } = {}) {
+  const normalizedTeacherId = normalizeEmail(teacherId);
+  if (!normalizedTeacherId) return { ok: false, message: 'Teacher account not found.' };
+  if (normalizedTeacherId === SUPER_ADMIN_EMAIL) return { ok: true, mode: 'admin', remainingTokens: Number.MAX_SAFE_INTEGER };
+  if (isEditingExisting) return { ok: true, mode: 'edit-existing', remainingTokens: getTeacherTokenBalance(getTeacherById(normalizedTeacherId)) };
+
   const teachers = getAllTeachers();
-  const adminId = normalizeEmail(SUPER_ADMIN_EMAIL);
-  const currentPricing = getLicensePricingSettings();
-  teachers[adminId] = {
-    ...(teachers[adminId] || {}),
-    teacherId: adminId,
-    email: adminId,
-    role: 'super_admin',
-    supportEmail: teachers[adminId]?.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
-    supportWhatsapp: teachers[adminId]?.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
-    licensePricing: {
-      daily: (nextPricing.daily ?? currentPricing.daily ?? '').toString().trim(),
-      weekly: (nextPricing.weekly ?? currentPricing.weekly ?? '').toString().trim(),
-      monthly: (nextPricing.monthly ?? currentPricing.monthly ?? '').toString().trim(),
-      yearly: (nextPricing.yearly ?? currentPricing.yearly ?? '').toString().trim()
-    },
-    createdAt: teachers[adminId]?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  saveAllTeachers(teachers);
+  const teacher = teachers[normalizedTeacherId];
+  if (!teacher) return { ok: false, message: 'Teacher account not found.' };
+  const now = new Date().toISOString();
+  const deviceId = getAppDeviceId();
+
+  if (isUnlimitedActiveOnCurrentDevice(teacher)) {
+    teachers[normalizedTeacherId] = {
+      ...teacher,
+      tokenUpdatedAt: now,
+      updatedAt: now
+    };
+    saveAllTeachers(teachers);
+    appendTokenTransaction(buildTokenTransaction('unlimited_usage', 0, `Saved quiz "${quizTitle || quizId || 'Untitled Quiz'}" using active unlimited access.`, {
+      userId: normalizedTeacherId,
+      quizId,
+      quizTitle,
+      deviceId,
+      createdAt: now
+    }));
+    return { ok: true, mode: 'unlimited', remainingTokens: getTeacherTokenBalance(teachers[normalizedTeacherId]) };
+  }
+
+  const currentBalance = getTeacherTokenBalance(teacher);
+  if (currentBalance >= 1) {
+    teachers[normalizedTeacherId] = {
+      ...teacher,
+      tokenBalance: currentBalance - 1,
+      tokenUpdatedAt: now,
+      updatedAt: now
+    };
+    saveAllTeachers(teachers);
+    appendTokenTransaction(buildTokenTransaction('quiz_usage', -1, `Saved quiz "${quizTitle || quizId || 'Untitled Quiz'}".`, {
+      userId: normalizedTeacherId,
+      quizId,
+      quizTitle,
+      nairaAmount: TOKEN_PRICE_PER_QUIZ,
+      deviceId,
+      createdAt: now
+    }));
+    return { ok: true, mode: 'token', remainingTokens: currentBalance - 1 };
+  }
+
+  return { ok: false, message: buildTokenInsufficientMessage(teacher) };
 }
 
 function getTeacherOwnedQuizCount(teacherId = state.teacherId) {
@@ -480,28 +649,16 @@ function getTeacherOwnedQuizCount(teacherId = state.teacherId) {
 
 function getTeacherTrialStatus(teacher = getCurrentTeacher()) {
   if (!teacher) return { available: false, used: false, label: 'No teacher session' };
-  if (teacher.role === 'super_admin' || normalizeEmail(teacher.teacherId || teacher.email) === SUPER_ADMIN_EMAIL) {
-    return { available: false, used: false, label: 'Admin accounts are unlimited' };
-  }
-  const used = !!teacher.trialQuizUsedAt || getTeacherOwnedQuizCount(teacher.teacherId || teacher.email) > 0;
   return {
-    available: !used,
-    used,
+    available: false,
+    used: true,
     usedAt: teacher.trialQuizUsedAt || '',
-    label: used ? 'Free trial used' : 'One free trial quiz available'
+    label: 'No free tokens by default'
   };
 }
 
 function getTeacherLicenseGraceDeadline(teacher = getCurrentTeacher()) {
-  if (!teacher || teacher.role === 'super_admin' || normalizeEmail(teacher.teacherId || teacher.email) === SUPER_ADMIN_EMAIL) return 0;
-  const status = getTeacherLicenseStatus(teacher);
-  if (status.active) return 0;
-  const base = teacher.licenseStopped
-    ? (teacher.licenseUpdatedAt || teacher.updatedAt || teacher.licenseEndsAt || '')
-    : (teacher.licenseEndsAt || '');
-  const baseTime = base ? new Date(base).getTime() : 0;
-  if (!baseTime || Number.isNaN(baseTime)) return 0;
-  return baseTime + (3 * 24 * 60 * 60 * 1000);
+  return 0;
 }
 
 function getTeacherById(teacherId = '') {
@@ -516,34 +673,7 @@ function canCurrentTeacherAccessQuiz(quiz = state.currentQuiz) {
 
 function getQuizEffectiveEndTime(quiz) {
   if (!quiz) return 0;
-  const scheduleEndTime = quiz.scheduleEnd ? new Date(quiz.scheduleEnd).getTime() : 0;
-  const owner = getTeacherById(quiz.teacherId);
-  const graceEndTime = getTeacherLicenseGraceDeadline(owner);
-  if (scheduleEndTime && graceEndTime) return Math.min(scheduleEndTime, graceEndTime);
-  return scheduleEndTime || graceEndTime || 0;
-}
-
-function formatLicensePlanLabel(planKey = '') {
-  const raw = (planKey || '').toString().trim().toLowerCase();
-  if (raw.startsWith('custom-')) {
-    const days = parseInt(raw.replace('custom-', ''), 10);
-    return Number.isFinite(days) && days > 0 ? `Custom (${days} day${days === 1 ? '' : 's'})` : 'Custom';
-  }
-  const labels = {
-    daily: 'Daily',
-    weekly: 'Weekly',
-    monthly: 'Monthly',
-    yearly: 'Yearly'
-  };
-  return labels[raw] || 'Plan';
-}
-
-function buildLicensePricingListMarkup() {
-  const pricing = getLicensePricingSettings();
-  return ['daily', 'weekly', 'monthly', 'yearly'].map((planKey) => {
-    const amount = (pricing[planKey] || '').trim();
-    return `<li>${formatLicensePlanLabel(planKey)}: ${escapeHtml(amount || 'Not set')}</li>`;
-  }).join('');
+  return quiz.scheduleEnd ? new Date(quiz.scheduleEnd).getTime() : 0;
 }
 
 function normalizeWhatsappNumber(value = '') {
@@ -578,6 +708,14 @@ function getSubmissionCorrectionContact(submission = {}) {
     whatsapp,
     label: channel === 'whatsapp' ? (whatsapp || 'No WhatsApp number') : (email || 'No email address')
   };
+}
+
+function getSubmissionIpAddress(submission = {}) {
+  return (
+    (submission?.monitoring && submission.monitoring.ipAddress)
+    || submission?.ipAddress
+    || ''
+  ).toString().trim();
 }
 
 function normalizeSubjectName(value = '') {
@@ -734,11 +872,11 @@ function mergeTeacherRecord(localItem = {}, remoteItem = {}) {
   const localStamp = getRecordStamp(localItem);
   const remoteStamp = getRecordStamp(remoteItem);
   const base = remoteStamp >= localStamp ? { ...(localItem || {}), ...(remoteItem || {}) } : { ...(remoteItem || {}), ...(localItem || {}) };
-  const localLicenseStamp = localItem?.licenseUpdatedAt ? new Date(localItem.licenseUpdatedAt).getTime() : 0;
-  const remoteLicenseStamp = remoteItem?.licenseUpdatedAt ? new Date(remoteItem.licenseUpdatedAt).getTime() : 0;
-  const licenseSource = remoteLicenseStamp >= localLicenseStamp ? remoteItem : localItem;
-  ['licenseEndsAt', 'licenseStopped', 'licenseRequestStatus', 'licenseUpdatedAt'].forEach((field) => {
-    if (Object.prototype.hasOwnProperty.call(licenseSource || {}, field)) base[field] = licenseSource[field];
+  const localAccessStamp = getTeacherAccessStamp(localItem);
+  const remoteAccessStamp = getTeacherAccessStamp(remoteItem);
+  const accessSource = remoteAccessStamp >= localAccessStamp ? remoteItem : localItem;
+  ['licenseEndsAt', 'licenseStopped', 'licenseRequestStatus', 'licenseUpdatedAt', 'tokenBalance', 'unlimitedExpiresAt', 'unlimitedDeviceId', 'tokenRequestStatus', 'tokenRequestedAt', 'tokenRequestedPackageKey', 'tokenRequestedAmount', 'tokenRequestedTokens', 'tokenRequestedDeviceId', 'lastUnlimitedDeviceTransferAt', 'tokenUpdatedAt'].forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(accessSource || {}, field)) base[field] = accessSource[field];
   });
   if (!base.role && normalizeEmail(base.teacherId || base.email) === SUPER_ADMIN_EMAIL) base.role = 'super_admin';
   return base;
@@ -760,6 +898,9 @@ function mergeSubmissionListsForSync(localList, remoteList) {
 function mergeSharedValue(storageKey, localValue, remoteValue) {
   if (storageKey === STORAGE_KEYS.submissions) {
     return mergeSubmissionListsForSync(localValue || [], remoteValue || []);
+  }
+  if (storageKey === STORAGE_KEYS.tokenTransactions) {
+    return mergeTokenTransactionsForSync(remoteValue || [], localValue || []);
   }
   if (storageKey === STORAGE_KEYS.teachers) {
     return mergeTeacherMapForSync(localValue || {}, remoteValue || {});
@@ -1144,6 +1285,7 @@ function getAllSubmissions(options = {}) {
   return includeDeleted ? submissions : submissions.filter((item) => !isDeletedSubmission(item));
 }
 function getAllTeachers() { return load(STORAGE_KEYS.teachers) || {}; }
+function getAllTokenTransactions() { return load(STORAGE_KEYS.tokenTransactions) || []; }
 function getAllTeacherStudents() { return load(STORAGE_KEYS.students) || {}; }
 function saveAllQuizzes(q, options = {}) {
   const keepDeleted = options.keepDeleted !== false;
@@ -1168,6 +1310,7 @@ function saveAllSubmissions(submissions, options = {}) {
   save(STORAGE_KEYS.submissions, nextValue);
 }
 function saveAllTeachers(t) { save(STORAGE_KEYS.teachers, t); }
+function saveAllTokenTransactions(transactions) { save(STORAGE_KEYS.tokenTransactions, Array.isArray(transactions) ? transactions : []); }
 function saveAllTeacherStudents(s) { save(STORAGE_KEYS.students, s); }
 
 function compactStoredSubmissions() {
@@ -1294,72 +1437,162 @@ function isSuperAdmin() { return normalizeEmail(state.teacherId) === SUPER_ADMIN
 function getTeacherLicenseStatus(teacher = getCurrentTeacher()) {
   if (!teacher) return { active: false, label: 'Not logged in', detail: 'Login required', endsAt: '' };
   if (teacher.role === 'super_admin' || normalizeEmail(teacher.teacherId || teacher.email) === SUPER_ADMIN_EMAIL) {
-    return { active: true, unlimited: true, label: 'Unlimited licence', detail: 'Admin licence never expires', endsAt: '' };
-  }
-  const requestedPlanLabel = teacher.licenseRequestedPlan ? formatLicensePlanLabel(teacher.licenseRequestedPlan) : '';
-  const activePlanLabel = teacher.licensePlan ? formatLicensePlanLabel(teacher.licensePlan) : '';
-  const resolvedActivePlanLabel = activePlanLabel === 'Plan' ? '' : activePlanLabel;
-  const trial = getTeacherTrialStatus(teacher);
-  if (trial.available) {
     return {
       active: true,
-      trial: true,
-      label: 'Free trial available',
-      detail: 'You may create and analyse one quiz before requesting a paid licence.',
+      unlimited: true,
+      canSaveQuiz: true,
+      tokenBalance: Number.MAX_SAFE_INTEGER,
+      label: 'Unlimited admin access',
+      detail: 'Admin accounts can create, update, and transfer unlimited access without token deductions.',
+      summary: 'Tokens: Unlimited | Unlimited: Always active',
       endsAt: ''
     };
   }
-  if (teacher.licenseRequestStatus === 'pending') {
+  const tokenBalance = getTeacherTokenBalance(teacher);
+  const unlimitedDays = getUnlimitedDaysLeft(teacher);
+  const unlimitedActive = unlimitedDays > 0;
+  const unlimitedHere = unlimitedActive && isUnlimitedActiveOnCurrentDevice(teacher);
+  const unlimitedWrongDevice = unlimitedActive && !unlimitedHere;
+  const requestedPackageKey = (teacher.tokenRequestedPackageKey || '').toString().trim().toLowerCase();
+  const requestedPackage = getTokenPackageByKey(requestedPackageKey);
+  const requestedAmount = Number(teacher.tokenRequestedAmount || requestedPackage?.price || 0) || 0;
+  const requestedTokens = Number(teacher.tokenRequestedTokens || requestedPackage?.tokens || 0) || 0;
+  const endsAt = teacher.unlimitedExpiresAt || '';
+  const baseSummary = unlimitedHere
+    ? `Tokens: ${tokenBalance} | Unlimited: ${unlimitedDays} day${unlimitedDays === 1 ? '' : 's'} left`
+    : unlimitedWrongDevice
+      ? `Tokens: ${tokenBalance} | Unlimited: active on another device`
+      : `Tokens: ${tokenBalance}`;
+
+  if (teacher.tokenRequestStatus === 'pending') {
+    const packageLabel = requestedPackage ? requestedPackage.label : 'purchase';
     return {
       active: false,
       pending: true,
-      label: requestedPlanLabel ? `${requestedPlanLabel} request pending` : 'Licence request pending',
-      detail: teacher.licenseRequestedAmount
-        ? `Awaiting admin approval for ${requestedPlanLabel || 'the selected'} plan (${teacher.licenseRequestedAmount}).`
-        : 'Awaiting admin approval for the selected paid licence plan.',
-      endsAt: teacher.licenseEndsAt || ''
+      label: `${packageLabel} request pending`,
+      detail: requestedPackage?.unlimitedDays
+        ? `Awaiting admin approval for ${packageLabel} (${formatNaira(requestedAmount)}).`
+        : `Awaiting admin approval for ${packageLabel}${requestedTokens ? ` • ${requestedTokens} Token${requestedTokens === 1 ? '' : 's'}` : ''} (${formatNaira(requestedAmount)}).`,
+      summary: baseSummary,
+      tokenBalance,
+      endsAt
     };
   }
-  if (teacher.licenseStopped) return { active: false, stopped: true, label: 'Licence stopped', detail: 'Previous quizzes remain open for only 3 days from the stop date. Contact admin for a higher duration.', endsAt: teacher.licenseEndsAt || '' };
-  if (!teacher.licenseEndsAt) return { active: false, label: 'No active licence', detail: 'Request a paid licence to keep creating or importing assessment content.', endsAt: '' };
-  const ends = new Date(teacher.licenseEndsAt);
-  if (Number.isNaN(ends.getTime())) return { active: false, label: 'Invalid licence', detail: 'Contact admin', endsAt: '' };
-  if (ends.getTime() < Date.now()) return { active: false, expired: true, label: 'Licence expired', detail: 'Previous quizzes remain open for only 3 days from the licence end date. Request a higher duration to keep creating or importing content.', endsAt: teacher.licenseEndsAt };
+
+  if (unlimitedHere) {
+    return {
+      active: true,
+      unlimited: true,
+      canSaveQuiz: true,
+      tokenBalance,
+      daysLeft: unlimitedDays,
+      label: 'Unlimited active',
+      detail: `Tokens: ${tokenBalance} • Unlimited: ${unlimitedDays} day${unlimitedDays === 1 ? '' : 's'} left on this device. Saving a new quiz will not deduct any token until ${new Date(teacher.unlimitedExpiresAt).toLocaleString()}.`,
+      summary: baseSummary,
+      endsAt
+    };
+  }
+
+  if (unlimitedWrongDevice && tokenBalance >= 1) {
+    return {
+      active: true,
+      canSaveQuiz: true,
+      tokenBalance,
+      unlimited: true,
+      wrongDevice: true,
+      daysLeft: unlimitedDays,
+      label: `Tokens: ${tokenBalance}`,
+      detail: `Your unlimited plan is on another device. Use 1 Token ${formatNaira(TOKEN_PRICE_PER_QUIZ)} to continue here.`,
+      summary: baseSummary,
+      endsAt
+    };
+  }
+
+  if (tokenBalance >= 1) {
+    const hadUnlimited = teacher.unlimitedExpiresAt && !unlimitedActive;
+    return {
+      active: true,
+      canSaveQuiz: true,
+      tokenBalance,
+      expired: hadUnlimited,
+      label: `Tokens: ${tokenBalance}`,
+      detail: hadUnlimited
+        ? `Unlimited ended. You still have ${tokenBalance} Token${tokenBalance === 1 ? '' : 's'}. Saving a new quiz will deduct 1 Token ${formatNaira(TOKEN_PRICE_PER_QUIZ)}.`
+        : `1 Token = 1 Quiz = ${formatNaira(TOKEN_PRICE_PER_QUIZ)}. Saving a new quiz will deduct 1 Token.`,
+      summary: baseSummary,
+      endsAt
+    };
+  }
+
+  if (unlimitedWrongDevice) {
+    return {
+      active: false,
+      canSaveQuiz: false,
+      tokenBalance,
+      unlimited: true,
+      wrongDevice: true,
+      daysLeft: unlimitedDays,
+      label: 'Unlimited locked to another device',
+      detail: `Your unlimited plan is on another device. Use 1 Token ${formatNaira(TOKEN_PRICE_PER_QUIZ)} to continue here.`,
+      summary: baseSummary,
+      endsAt
+    };
+  }
+
+  if (teacher.unlimitedExpiresAt && !unlimitedActive) {
+    return {
+      active: false,
+      canSaveQuiz: false,
+      tokenBalance,
+      expired: true,
+      label: 'Unlimited ended',
+      detail: `Unlimited ended. You have ${tokenBalance} Token${tokenBalance === 1 ? '' : 's'}. Top up to keep saving new quizzes.`,
+      summary: baseSummary,
+      endsAt
+    };
+  }
+
   return {
-    active: true,
-    label: resolvedActivePlanLabel ? `${resolvedActivePlanLabel} licence active` : 'Licensed',
-    detail: `${resolvedActivePlanLabel ? `${resolvedActivePlanLabel} plan • ` : ''}Licence ends ${ends.toLocaleString()}`,
-    endsAt: teacher.licenseEndsAt
+    active: false,
+    canSaveQuiz: false,
+    tokenBalance,
+    label: 'Insufficient Tokens',
+    detail: `Insufficient Tokens. 1 Token = ${formatNaira(TOKEN_PRICE_PER_QUIZ)}. Buy Tokens.`,
+    summary: baseSummary,
+    endsAt
   };
 }
 
 function canSetQuestions() {
-  return isSuperAdmin() || getTeacherLicenseStatus().active;
+  return isTeacherLoggedIn();
 }
 
-function requestTeacherLicense(selectedPlanKey = 'weekly', contactChannel = '') {
+function requestTeacherLicense(selectedPlanKey = 'starter', contactChannel = '') {
   const teacher = getCurrentTeacher();
   if (!teacher) { state.view = 'teacher.login'; render(); return; }
+  const selectedPackage = getTokenPackageByKey(selectedPlanKey) || getTokenPackageByKey('starter');
   const teachers = getAllTeachers();
   const id = normalizeEmail(teacher.teacherId || teacher.email);
-  const pricing = getLicensePricingSettings();
-  const chosenPlan = ['daily', 'weekly', 'monthly', 'yearly'].includes(selectedPlanKey) ? selectedPlanKey : 'weekly';
-  const chosenAmount = (pricing[chosenPlan] || '').toString().trim();
   teachers[id] = {
     ...teachers[id],
-    licenseRequestedAt: new Date().toISOString(),
-    licenseRequestStatus: 'pending',
-    licenseRequestedPlan: chosenPlan,
-    licenseRequestedAmount: chosenAmount
+    tokenRequestStatus: 'pending',
+    tokenRequestedAt: new Date().toISOString(),
+    tokenRequestedPackageKey: selectedPackage.key,
+    tokenRequestedTokens: selectedPackage.tokens || 0,
+    tokenRequestedAmount: selectedPackage.price || 0,
+    tokenRequestedDeviceId: selectedPackage.unlimitedDays ? getAppDeviceId() : '',
+    updatedAt: new Date().toISOString()
   };
-  teachers[id].updatedAt = new Date().toISOString();
   saveAllTeachers(teachers);
-  showNotification('Licence request saved.', 'success', 5000);
+  showNotification('Token purchase request saved.', 'success', 5000);
   const support = getSupportSettings();
   const teacherName = getTeacherDisplayName(teacher, { fallback: id });
   const teacherPhone = getTeacherPhoneLabel(teacher, { fallback: '' });
-  const subject = encodeURIComponent('OPE Assessor Licence Request');
-  const body = encodeURIComponent(`Hello Admin,\n\nI want to request a paid OPE Assessor licence.\n\nTeacher Name: ${teacherName}\nTeacher ID: ${id}${teacherPhone ? `\nPhone Number: ${teacherPhone}` : ''}\nRequested plan: ${formatLicensePlanLabel(chosenPlan)}\nAmount shown: ${chosenAmount || 'Not set'}\nRequest time: ${new Date().toLocaleString()}\n\nRegards,\n${teacherName}`);
+  const subject = encodeURIComponent('OPE Assessor Token Purchase Request');
+  const packageDescription = selectedPackage.unlimitedDays
+    ? `${selectedPackage.label} (${selectedPackage.unlimitedDays} days, ${formatNaira(selectedPackage.price)})`
+    : `${selectedPackage.label} (${selectedPackage.tokens} Token${selectedPackage.tokens === 1 ? '' : 's'}, ${formatNaira(selectedPackage.price)})`;
+  const body = encodeURIComponent(`Hello Admin,\n\nI want to request a paid OPE Assessor token package.\n\nTeacher Name: ${teacherName}\nTeacher ID: ${id}${teacherPhone ? `\nPhone Number: ${teacherPhone}` : ''}\nRequested package: ${packageDescription}\nCurrent device ID: ${getAppDeviceId()}\nRequest time: ${new Date().toLocaleString()}\n\nRegards,\n${teacherName}`);
   if (contactChannel === 'email') {
     if (!support.email) return showNotification('Support email has not been set yet', 'error');
     window.location.href = `mailto:${encodeURIComponent(support.email)}?subject=${subject}&body=${body}`;
@@ -1375,23 +1608,22 @@ function showLicenseRequired() {
   const status = getTeacherLicenseStatus();
   const teacher = getCurrentTeacher() || {};
   const pricingList = buildLicensePricingListMarkup();
-  const selectedPlan = teacher.licenseRequestedPlan || 'weekly';
+  const selectedPlan = (teacher.tokenRequestedPackageKey || 'starter').toString().trim().toLowerCase();
   let modal = document.getElementById('licenseRequiredModal'); if (modal) modal.remove();
   modal = document.createElement('div'); modal.id='licenseRequiredModal'; modal.style.position='fixed'; modal.style.inset='0'; modal.style.background='rgba(15,23,42,.45)'; modal.style.zIndex=30000; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center';
   const inner = document.createElement('div'); inner.className='card-beautiful p-6'; inner.style.width='min(520px,94%)';
   inner.innerHTML = `
     <div class="h2">${escapeHtml(status.label)}</div>
     <p class="small">${escapeHtml(status.detail)}</p>
-    <p class="small">This is a paid licence. You can still view your existing quizzes, results, and students, but importing or creating new assessment content needs either the one free trial quiz or an active paid licence.</p>
-    <div class="small" style="margin-top:10px"><strong>Current licence pricing</strong></div>
+    <p class="small">${escapeHtml(getTeacherPurchaseSummary(teacher))}</p>
+    <p class="small">1 Token = 1 Quiz = ${formatNaira(TOKEN_PRICE_PER_QUIZ)}. Token deductions happen only when you save a brand-new quiz. Editing an existing quiz will not deduct a token.</p>
+    <div class="small" style="margin-top:10px"><strong>Token bundles and unlimited</strong></div>
     <ul class="small" style="margin:8px 0 0 18px;line-height:1.8">${pricingList}</ul>
-    <label class="small" style="display:block;margin-top:14px">Select licence plan</label>
+    <label class="small" style="display:block;margin-top:14px">Select package</label>
     <select id="licensePlanSelect" class="input-beautiful" style="margin-top:6px">
-      <option value="daily" ${selectedPlan === 'daily' ? 'selected' : ''}>Daily</option>
-      <option value="weekly" ${selectedPlan === 'weekly' ? 'selected' : ''}>Weekly</option>
-      <option value="monthly" ${selectedPlan === 'monthly' ? 'selected' : ''}>Monthly</option>
-      <option value="yearly" ${selectedPlan === 'yearly' ? 'selected' : ''}>Yearly</option>
+      ${getTokenPackageCatalog().map((tokenPackage) => `<option value="${tokenPackage.key}" ${selectedPlan === tokenPackage.key ? 'selected' : ''}>${escapeHtml(tokenPackage.label)}</option>`).join('')}
     </select>
+    <div class="small" style="margin-top:12px;line-height:1.6">Current device ID: <strong>${escapeHtml(getAppDeviceId())}</strong>${status.wrongDevice ? '<br>Your unlimited plan is on another device. Copy this device ID and ask admin to transfer it if you want unlimited here.' : ''}</div>
     <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px">
       <button id="closeLicenseRequired" class="btn btn-ghost">Close</button>
       <button id="requestLicenseEmailBtn" class="btn btn-ghost">Request by Email</button>
@@ -1402,11 +1634,11 @@ function showLicenseRequired() {
   document.getElementById('closeLicenseRequired').onclick = () => modal.remove();
   document.getElementById('requestLicenseEmailBtn').onclick = () => {
     modal.remove();
-    requestTeacherLicense(document.getElementById('licensePlanSelect')?.value || 'weekly', 'email');
+    requestTeacherLicense(document.getElementById('licensePlanSelect')?.value || 'starter', 'email');
   };
   document.getElementById('requestLicenseWhatsappBtn').onclick = () => {
     modal.remove();
-    requestTeacherLicense(document.getElementById('licensePlanSelect')?.value || 'weekly', 'whatsapp');
+    requestTeacherLicense(document.getElementById('licensePlanSelect')?.value || 'starter', 'whatsapp');
   };
 }
 
@@ -1533,7 +1765,8 @@ function ensureSuperAdminAccount() {
     phone: teachers[id]?.phone || '',
     supportEmail: teachers[id]?.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
     supportWhatsapp: teachers[id]?.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
-    licensePricing: teachers[id]?.licensePricing || DEFAULT_LICENSE_PRICING,
+    tokenBalance: teachers[id]?.tokenBalance ?? Number.MAX_SAFE_INTEGER,
+    tokenUpdatedAt: teachers[id]?.tokenUpdatedAt || new Date().toISOString(),
     createdAt: teachers[id]?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -1758,8 +1991,183 @@ function wireRichTextEditors(root = document) {
   });
 }
 
-function getLicensePlanDurationDays(planKey = '') {
-  return LICENSE_PLAN_DAYS[(planKey || '').toString().trim().toLowerCase()] || 0;
+function parseQuestionNumberList(value = '', maxCount = 0) {
+  const numbers = (value || '').toString().split(',')
+    .map((item) => parseInt(item.trim(), 10))
+    .filter((item) => Number.isFinite(item) && item > 0);
+  const unique = [...new Set(numbers)];
+  return maxCount > 0 ? unique.filter((item) => item <= maxCount) : unique;
+}
+
+function normalizeQuestionImagePlacement(value = '') {
+  return (value || '').toString().trim().toLowerCase() === 'after' ? 'after' : 'before';
+}
+
+function sanitizeQuestionMediaAssets(assets = []) {
+  return (Array.isArray(assets) ? assets : []).map((asset, index) => ({
+    id: asset?.id || `asset_${index + 1}`,
+    src: (asset?.src || '').toString().trim(),
+    placement: normalizeQuestionImagePlacement(asset?.placement),
+    fileName: (asset?.fileName || '').toString().trim(),
+    altText: (asset?.altText || asset?.fileName || 'Question image').toString().trim()
+  })).filter((asset) => !!asset.src);
+}
+
+function normalizeSubjectQuestionImages(groups = []) {
+  return (Array.isArray(groups) ? groups : []).map((group, index) => ({
+    id: group?.id || `group_${index + 1}`,
+    src: (group?.src || '').toString().trim(),
+    placement: normalizeQuestionImagePlacement(group?.placement),
+    fileName: (group?.fileName || '').toString().trim(),
+    altText: (group?.altText || group?.fileName || 'Question image').toString().trim(),
+    questionNumbers: parseQuestionNumberList(group?.questionNumbers || '')
+  })).filter((group) => !!group.src && group.questionNumbers.length);
+}
+
+function createEditableSubjectQuestionImage(group = {}, index = 0) {
+  const numbers = Array.isArray(group?.questionNumbers)
+    ? group.questionNumbers
+    : parseQuestionNumberList(group?.questionNumbers || '');
+  return {
+    id: group?.id || `group_${Date.now()}_${index + 1}_${Math.random().toString(36).slice(2, 8)}`,
+    src: (group?.src || '').toString().trim(),
+    placement: normalizeQuestionImagePlacement(group?.placement),
+    fileName: (group?.fileName || '').toString().trim(),
+    altText: (group?.altText || group?.fileName || 'Question image').toString().trim(),
+    questionNumbersText: numbers.join(', ')
+  };
+}
+
+function serializeEditableSubjectQuestionImages(groups = [], maxCount = 0) {
+  return (Array.isArray(groups) ? groups : []).map((group, index) => ({
+    id: group?.id || `group_${index + 1}`,
+    src: (group?.src || '').toString().trim(),
+    placement: normalizeQuestionImagePlacement(group?.placement),
+    fileName: (group?.fileName || '').toString().trim(),
+    altText: (group?.altText || group?.fileName || 'Question image').toString().trim(),
+    questionNumbers: parseQuestionNumberList(group?.questionNumbersText || group?.questionNumbers || '', maxCount)
+  })).filter((group) => !!group.src && group.questionNumbers.length);
+}
+
+function stripQuestionMediaAssets(questions = []) {
+  return (Array.isArray(questions) ? questions : []).map((question) => ({
+    ...question,
+    mediaAssets: []
+  }));
+}
+
+function buildQuestionsWithSubjectImages(sourceQuestions = [], subjectName = 'General', questionImages = []) {
+  const normalizedSubjectName = (subjectName || 'General').toString().trim() || 'General';
+  const normalizedQuestions = (Array.isArray(sourceQuestions) ? sourceQuestions : [])
+    .filter(isMeaningfulQuestion)
+    .map((question, index) => normalizeQuestionForStorage({ ...question, subject: normalizedSubjectName }, index, normalizedSubjectName));
+  const normalizedImages = normalizeSubjectQuestionImages(questionImages);
+  if (!normalizedImages.length) return normalizedQuestions;
+  return applySubjectQuestionImagesToQuestions(stripQuestionMediaAssets(normalizedQuestions), normalizedImages);
+}
+
+function deriveSubjectQuestionImagesFromQuestions(questions = []) {
+  const grouped = new Map();
+  (Array.isArray(questions) ? questions : []).forEach((question, questionIndex) => {
+    sanitizeQuestionMediaAssets(question?.mediaAssets || []).forEach((asset) => {
+      const key = [asset.src, asset.placement, asset.fileName, asset.altText].join('||');
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          id: asset.id || `group_${grouped.size + 1}`,
+          src: asset.src,
+          placement: asset.placement,
+          fileName: asset.fileName,
+          altText: asset.altText,
+          questionNumbers: []
+        });
+      }
+      grouped.get(key).questionNumbers.push(questionIndex + 1);
+    });
+  });
+  return Array.from(grouped.values()).map((item) => ({
+    ...item,
+    questionNumbers: [...new Set(item.questionNumbers)].sort((left, right) => left - right)
+  }));
+}
+
+function applySubjectQuestionImagesToQuestions(questions = [], questionImages = []) {
+  const nextQuestions = (Array.isArray(questions) ? questions : []).map((question) => ({
+    ...question,
+    mediaAssets: sanitizeQuestionMediaAssets(question?.mediaAssets || [])
+  }));
+  normalizeSubjectQuestionImages(questionImages).forEach((group) => {
+    group.questionNumbers.forEach((questionNumber) => {
+      const question = nextQuestions[questionNumber - 1];
+      if (!question) return;
+      const mediaAssets = sanitizeQuestionMediaAssets(question.mediaAssets || []);
+      const nextAsset = {
+        id: `${group.id}_${questionNumber}`,
+        src: group.src,
+        placement: group.placement,
+        fileName: group.fileName,
+        altText: group.altText || group.fileName || `Question ${questionNumber} image`
+      };
+      const alreadyExists = mediaAssets.some((asset) => (
+        asset.src === nextAsset.src
+        && normalizeQuestionImagePlacement(asset.placement) === nextAsset.placement
+        && (asset.fileName || '') === (nextAsset.fileName || '')
+        && (asset.altText || '') === (nextAsset.altText || '')
+      ));
+      if (!alreadyExists) mediaAssets.push(nextAsset);
+      question.mediaAssets = mediaAssets;
+    });
+  });
+  return nextQuestions;
+}
+
+function getQuestionMediaAssets(question = {}, placement = 'before') {
+  const normalizedPlacement = normalizeQuestionImagePlacement(placement);
+  return sanitizeQuestionMediaAssets(question?.mediaAssets || []).filter((asset) => asset.placement === normalizedPlacement);
+}
+
+function renderQuestionMediaAssets(question = {}, placement = 'before') {
+  const assets = getQuestionMediaAssets(question, placement);
+  if (!assets.length) return '';
+  return `
+    <div class="question-media-stack" style="display:grid;gap:12px;margin:12px 0">
+      ${assets.map((asset) => `
+        <figure class="question-media-card" style="margin:0;border:1px solid #BFDBFE;border-radius:16px;background:#EFF6FF;padding:12px">
+          <img src="${asset.src.replace(/"/g, '&quot;')}" alt="${escapeHtml((asset.altText || asset.fileName || 'Question image'))}" style="display:block;max-width:100%;height:auto;border-radius:12px;margin:0 auto" />
+          ${asset.fileName ? `<figcaption style="margin-top:8px;font-size:12px;color:#475569">${escapeHtml(asset.fileName)}</figcaption>` : ''}
+        </figure>
+      `).join('')}
+    </div>
+  `;
+}
+
+function readImageFileAsDataUrl(file, options = {}) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('No image file selected'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Unable to read image file'));
+    reader.onload = () => {
+      const source = reader.result;
+      if (!file.type || !file.type.startsWith('image/')) return resolve(source);
+      const image = new Image();
+      image.onerror = () => resolve(source);
+      image.onload = () => {
+        const maxWidth = Number(options.maxWidth) > 0 ? Number(options.maxWidth) : 1600;
+        const maxHeight = Number(options.maxHeight) > 0 ? Number(options.maxHeight) : 1600;
+        const ratio = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
+        if (ratio >= 1) return resolve(source);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.width * ratio));
+        canvas.height = Math.max(1, Math.round(image.height * ratio));
+        const context = canvas.getContext('2d');
+        if (!context) return resolve(source);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const mimeType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+        resolve(canvas.toDataURL(mimeType, mimeType === 'image/png' ? undefined : 0.92));
+      };
+      image.src = source;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function normalizeQuestionForStorage(question, index = 0, subjectName = 'General') {
@@ -1773,7 +2181,8 @@ function normalizeQuestionForStorage(question, index = 0, subjectName = 'General
     difficulty: question.difficulty || 'Medium',
     explanation: normalizeRichText(question.explanation || ''),
     learningPoint: normalizeRichText(question.learningPoint || ''),
-    keyConcept: normalizeRichText(question.keyConcept || question.topic || '')
+    keyConcept: normalizeRichText(question.keyConcept || question.topic || ''),
+    mediaAssets: sanitizeQuestionMediaAssets(question.mediaAssets || [])
   };
   normalized._sourceId = question._sourceId || question.id || makeQuestionId(normalized, index);
   return normalized;
@@ -1842,8 +2251,9 @@ function computeFacilityIndex(quizId) {
   const quizQuestions = [];
   for (const subj of (quiz.subjects || [])) {
     const source = Array.isArray(subj.bankQuestions) && subj.bankQuestions.length ? subj.bankQuestions : subj.questions;
-    for (let i = 0; i < (source || []).length; i++) {
-      const q = normalizeQuestionForStorage(source[i], i, subj.name || 'General');
+    const normalizedSource = buildQuestionsWithSubjectImages(source || [], subj.name || 'General', subj.questionImages || []);
+    for (let i = 0; i < normalizedSource.length; i++) {
+      const q = normalizedSource[i];
       quizQuestions.push({
         _sourceId: q._sourceId,
         question: q.question || '',
@@ -1852,6 +2262,7 @@ function computeFacilityIndex(quizId) {
         explanation: q.explanation || '',
         learningPoint: q.learningPoint || '',
         keyConcept: q.keyConcept || q.topic || '',
+        mediaAssets: sanitizeQuestionMediaAssets(q.mediaAssets || []),
         options: q.options || [],
         answer: q.answer || null,
         difficulty: q.difficulty || 'Medium'
@@ -1899,6 +2310,7 @@ function computeFacilityIndex(quizId) {
       explanation: qq.explanation || '',
       learningPoint: qq.learningPoint || '',
       keyConcept: qq.keyConcept || qq.topic || '',
+      mediaAssets: sanitizeQuestionMediaAssets(qq.mediaAssets || []),
       question: qq.question,
       options: qq.options,
       answer: qq.answer,
@@ -1955,11 +2367,10 @@ function getQuizQuestionsForTaking(quiz) {
   let allQuestions = [];
   for (const subj of (quiz.subjects || [])) {
     const source = Array.isArray(subj.bankQuestions) && subj.bankQuestions.length ? subj.bankQuestions : subj.questions;
-    let normalized = (source || []).filter(isMeaningfulQuestion).map((question, index) => {
-      const item = normalizeQuestionForStorage(question, index, subj.name || 'General');
-      item._subject = subj.name || item.subject || 'General';
-      return item;
-    });
+    let normalized = buildQuestionsWithSubjectImages(source || [], subj.name || 'General', subj.questionImages || []).map((question) => ({
+      ...question,
+      _subject: subj.name || question.subject || 'General'
+    }));
     if (quiz.shuffleQs) shuffle(normalized);
     const subjectPickCount = parseInt(subj.questionCount || 0, 10) || 0;
     if (subjectPickCount > 0 && subjectPickCount < normalized.length) normalized = normalized.slice(0, subjectPickCount);
@@ -2570,7 +2981,7 @@ function showAlertsPanel() {
       <h3 style="margin:0">Alerts</h3>
       <button id="closeAlertsPanel" class="btn btn-ghost btn-sm">Close</button>
     </div>
-    <div class="small" style="margin-bottom:12px">Exam notices, licence status, and recent monitoring warnings.</div>
+    <div class="small" style="margin-bottom:12px">Exam notices, token status, and recent monitoring warnings.</div>
     ${alerts.map(a => `
       <div class="alert-item alert-${escapeHtml(a.type)}">
         <strong>${escapeHtml(a.title)}</strong>
@@ -2614,7 +3025,21 @@ function renderTeacherAuth() {
       if (createMode) {
         if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
         if (teachers[id]) return showNotification('Teacher ID already exists. Login instead.', 'error');
-        teachers[id] = { teacherId: id, email: id, password, role: 'teacher', name: '', phone: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        teachers[id] = {
+          teacherId: id,
+          email: id,
+          password,
+          role: 'teacher',
+          name: '',
+          phone: '',
+          tokenBalance: 0,
+          tokenUpdatedAt: new Date().toISOString(),
+          tokenRequestStatus: '',
+          unlimitedExpiresAt: '',
+          unlimitedDeviceId: '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
         saveAllTeachers(teachers);
         showNotification('Teacher ID created', 'success');
       } else {
@@ -2771,8 +3196,8 @@ function renderTeacherOverview() {
   `;
 
   setTimeout(() => {
-    document.getElementById('quickCreate').onclick = () => { canSetQuestions() ? showCreateQuizModal() : showLicenseRequired(); };
-    document.getElementById('quickUpload').onclick = () => { canSetQuestions() ? showCreateQuizModal() : showLicenseRequired(); };
+    document.getElementById('quickCreate').onclick = () => { showCreateQuizModal(); };
+    document.getElementById('quickUpload').onclick = () => { showCreateQuizModal(); };
     document.getElementById('btnFindIP').onclick = () => { showLocalNetworkGuide(); };
     document.getElementById('gotoQuizzes').onclick = () => { state.view = 'teacher.quizzes'; render(); };
     document.getElementById('editTeacherProfileBtn').onclick = () => openTeacherProfileEditor();
@@ -2783,8 +3208,9 @@ function renderTeacherOverview() {
       <div>
         <strong>${escapeHtml(licence.label)}</strong>
         <div class="small">${escapeHtml(licence.detail)}</div>
+        <div class="small" style="margin-top:6px">${escapeHtml(licence.summary || '')}</div>
       </div>
-      ${licence.active ? '' : '<button id="requestLicenceInline" class="btn btn-primary btn-sm">Request Licence</button>'}
+      ${licence.canSaveQuiz ? '<button id="requestLicenceInline" class="btn btn-ghost btn-sm">Top Up / Unlimited</button>' : '<button id="requestLicenceInline" class="btn btn-primary btn-sm">Buy Tokens</button>'}
     `;
     const req = document.getElementById('requestLicenceInline'); if (req) req.onclick = () => showLicenseRequired();
 
@@ -3285,32 +3711,34 @@ function renderSettingsView() {
       </div>
       ${isSuperAdmin() ? `
         <div class="card">
-          <div class="h3">Licensing Plans</div>
-          <div class="small">Set the paid amounts teachers will see before contacting admin for licence approval.</div>
-          <label class="small" style="display:block;margin-top:12px">Daily amount</label>
-          <input id="licensePriceDaily" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().daily || '')}" placeholder="e.g. NGN 2,000" />
-          <label class="small" style="display:block;margin-top:10px">Weekly amount</label>
-          <input id="licensePriceWeekly" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().weekly || '')}" placeholder="e.g. NGN 8,000" />
-          <label class="small" style="display:block;margin-top:10px">Monthly amount</label>
-          <input id="licensePriceMonthly" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().monthly || '')}" placeholder="e.g. NGN 25,000" />
-          <label class="small" style="display:block;margin-top:10px">Yearly amount</label>
-          <input id="licensePriceYearly" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().yearly || '')}" placeholder="e.g. NGN 200,000" />
-          <button id="saveLicensePricingBtn" class="btn btn-primary" style="margin-top:12px">Save Licensing</button>
+          <div class="h3">Token Packages</div>
+          <div class="small">1 Token = 1 Quiz = ${formatNaira(TOKEN_PRICE_PER_QUIZ)}. The app now uses only Tokens plus the 3-month unlimited plan.</div>
+          <div style="margin-top:12px;display:grid;gap:10px">
+            ${getTokenPackageCatalog().map((tokenPackage) => `
+              <div class="card" style="padding:12px;border:1px solid #DBEAFE;box-shadow:none">
+                <div style="font-weight:800;color:#1D4ED8">${escapeHtml(tokenPackage.label)}</div>
+                <div class="small" style="margin-top:4px">${tokenPackage.unlimitedDays
+                  ? `${formatNaira(tokenPackage.price)} • ${tokenPackage.unlimitedDays} days on one registered device`
+                  : `${tokenPackage.tokens} Token${tokenPackage.tokens === 1 ? '' : 's'} • ${formatNaira(tokenPackage.price)} • ${formatNaira(tokenPackage.effectivePrice)} per quiz`}</div>
+                <div class="small" style="margin-top:4px">${escapeHtml(tokenPackage.useCase || '')}</div>
+              </div>
+            `).join('')}
+          </div>
         </div>
       ` : ''}
     </div>
     ${isSuperAdmin() ? `
       <div class="card" style="margin-top:var(--space-3)">
         <div class="card-header"><h3>Super Admin - Teacher Accounts</h3></div>
-        <div class="small" style="margin:12px 0">Manage teacher access, licence duration, and password resets.</div>
+        <div class="small" style="margin:12px 0">Manage teacher token access, unlimited device locks, and password resets.</div>
         <input id="teacherSearch" class="input-beautiful" placeholder="Search teacher ID..." style="margin-bottom:12px" />
         <div class="table-wrap">
           <table class="table-dense">
-            <thead><tr><th>Teacher ID</th><th>Role</th><th>Licence</th><th>Request</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Teacher ID</th><th>Role</th><th>Access</th><th>Request</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody id="teacherAdminRows">${teacherRows.map(t => {
               const id = t.teacherId || t.email;
               const status = getTeacherLicenseStatus(t);
-              return `<tr data-teacher-row="${escapeHtml(id)}"><td>${escapeHtml(id)}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(status.detail || status.label)}</td><td>${t.licenseRequestedAt ? new Date(t.licenseRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><div class="row-action-shell"><select class="input-beautiful row-action-select teacherAdminActionSelect" data-id="${escapeHtml(id)}"><option value="">Choose action</option><option value="view-exams">View Exams</option><option value="view-students">Students</option><option value="grant-license">Grant Licence</option><option value="stop-license">Stop Licence</option><option value="reset-password">Reset Password</option><option value="change-id">Change ID</option></select><button class="btn btn-ghost btn-sm btnApplyTeacherAdminAction" data-id="${escapeHtml(id)}">Apply</button></div></td></tr>`;
+              return `<tr data-teacher-row="${escapeHtml(id)}"><td>${escapeHtml(id)}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(status.detail || status.label)}</td><td>${t.tokenRequestedAt ? new Date(t.tokenRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><div class="row-action-shell"><select class="input-beautiful row-action-select teacherAdminActionSelect" data-id="${escapeHtml(id)}"><option value="">Choose action</option><option value="view-exams">View Exams</option><option value="view-students">Students</option><option value="grant-license">Grant Tokens / Unlimited</option><option value="transfer-unlimited-device">Transfer Unlimited Device</option><option value="stop-license">Clear Unlimited</option><option value="reset-password">Reset Password</option><option value="change-id">Change ID</option></select><button class="btn btn-ghost btn-sm btnApplyTeacherAdminAction" data-id="${escapeHtml(id)}">Apply</button></div></td></tr>`;
             }).join('') || '<tr><td colspan="6">No teachers yet.</td></tr>'}</tbody>
           </table>
         </div>
@@ -3370,18 +3798,6 @@ function renderSettingsView() {
       showNotification('Backup downloaded', 'success');
     };
     document.getElementById('openNetworkGuide').onclick = () => showLocalNetworkGuide();
-    const savePricingBtn = document.getElementById('saveLicensePricingBtn');
-    if (savePricingBtn) savePricingBtn.onclick = () => {
-      if (!confirmTeacherAction('Save these licensing amounts for teacher requests?')) return;
-      saveLicensePricingSettings({
-        daily: document.getElementById('licensePriceDaily')?.value || '',
-        weekly: document.getElementById('licensePriceWeekly')?.value || '',
-        monthly: document.getElementById('licensePriceMonthly')?.value || '',
-        yearly: document.getElementById('licensePriceYearly')?.value || ''
-      });
-      showNotification('Licensing amounts saved', 'success');
-      render();
-    };
     const search = document.getElementById('teacherSearch');
     if (search) search.oninput = () => {
       const term = normalizeEmail(search.value);
@@ -3400,40 +3816,98 @@ function renderSettingsView() {
       } else if (action === 'view-students') {
         showAdminTeacherStudents(id);
       } else if (action === 'grant-license') {
-        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin licence is unlimited', 'info');
+        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin access is already unlimited', 'info');
         const all = getAllTeachers();
         if (!all[id]) return showNotification('Teacher not found', 'error');
-        const requestedPlan = (all[id].licenseRequestedPlan || '').toString().trim().toLowerCase();
-        const suggestedPlan = requestedPlan && getLicensePlanDurationDays(requestedPlan) ? requestedPlan : 'monthly';
-        const enteredPlan = (prompt(`Licence plan for ${id}. Enter daily, weekly, monthly, yearly, or custom for manual days.`, suggestedPlan) || suggestedPlan).trim().toLowerCase();
-        let days = getLicensePlanDurationDays(enteredPlan);
-        let appliedPlan = enteredPlan;
-        if (enteredPlan === 'custom' || !days) {
-          days = parseInt(prompt('Custom licence duration in days for ' + id, '30') || '', 10);
-          appliedPlan = days ? `custom-${days}` : '';
+        const requestedPackageKey = (all[id].tokenRequestedPackageKey || '').toString().trim().toLowerCase();
+        const suggestedPackage = requestedPackageKey || 'starter';
+        const enteredPackageKey = (prompt(`Token package for ${id}. Enter single, starter, standard, pro, school, or unlimited-3mo.`, suggestedPackage) || suggestedPackage).trim().toLowerCase();
+        const tokenPackage = getTokenPackageByKey(enteredPackageKey);
+        if (!tokenPackage) return showNotification('Unknown package key', 'error');
+        const now = new Date().toISOString();
+        if (tokenPackage.unlimitedDays) {
+          const targetDeviceId = (all[id].tokenRequestedDeviceId || all[id].unlimitedDeviceId || prompt(`Device ID to lock ${tokenPackage.label} for ${id}`, '') || '').trim();
+          if (!targetDeviceId) return showNotification('Device ID is required for unlimited access', 'error');
+          if (!confirmTeacherAction(`Grant ${tokenPackage.label} to ${id} and lock it to device ${targetDeviceId}?`)) return;
+          all[id].unlimitedExpiresAt = new Date(Date.now() + tokenPackage.unlimitedDays * 24 * 60 * 60 * 1000).toISOString();
+          all[id].unlimitedDeviceId = targetDeviceId;
+          all[id].licenseUpdatedAt = now;
+          all[id].tokenUpdatedAt = now;
+          all[id].updatedAt = now;
+          all[id].tokenRequestStatus = 'approved';
+          appendTokenTransaction(buildTokenTransaction('unlimited_purchase', 0, `Admin granted ${tokenPackage.label}.`, {
+            userId: id,
+            packageKey: tokenPackage.key,
+            nairaAmount: tokenPackage.price,
+            deviceId: targetDeviceId,
+            createdAt: now
+          }));
+        } else {
+          if (!confirmTeacherAction(`Grant ${tokenPackage.tokens} Token${tokenPackage.tokens === 1 ? '' : 's'} to ${id}?`)) return;
+          all[id].tokenBalance = getTeacherTokenBalance(all[id]) + tokenPackage.tokens;
+          all[id].licenseUpdatedAt = now;
+          all[id].tokenUpdatedAt = now;
+          all[id].updatedAt = now;
+          all[id].tokenRequestStatus = 'approved';
+          appendTokenTransaction(buildTokenTransaction('token_purchase', tokenPackage.tokens, `Admin granted ${tokenPackage.label}.`, {
+            userId: id,
+            packageKey: tokenPackage.key,
+            nairaAmount: tokenPackage.price,
+            createdAt: now
+          }));
         }
-        if (!days || days <= 0) return;
-        if (!confirmTeacherAction(`Grant ${days} day(s) of licence to ${id}?`)) return;
-        all[id].licenseEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-        all[id].licenseStopped = false;
-        all[id].licenseRequestStatus = 'approved';
-        all[id].licensePlan = ['daily', 'weekly', 'monthly', 'yearly'].includes(enteredPlan) ? enteredPlan : appliedPlan;
-        all[id].licenseUpdatedAt = new Date().toISOString();
-        all[id].updatedAt = all[id].licenseUpdatedAt;
+        all[id].tokenRequestedAt = '';
+        all[id].tokenRequestedPackageKey = '';
+        all[id].tokenRequestedAmount = 0;
+        all[id].tokenRequestedTokens = 0;
+        all[id].tokenRequestedDeviceId = '';
         saveAllTeachers(all);
-        showNotification('Licence granted', 'success');
+        showNotification('Token package granted', 'success');
+        render();
+      } else if (action === 'transfer-unlimited-device') {
+        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin access does not need device transfer', 'info');
+        const all = getAllTeachers();
+        if (!all[id]) return showNotification('Teacher not found', 'error');
+        if (!all[id].unlimitedExpiresAt || !getUnlimitedDaysLeft(all[id])) return showNotification('This teacher has no active unlimited plan to transfer', 'error');
+        const lastTransferStamp = all[id].lastUnlimitedDeviceTransferAt ? new Date(all[id].lastUnlimitedDeviceTransferAt).getTime() : 0;
+        if (lastTransferStamp && (Date.now() - lastTransferStamp) < TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS * 24 * 60 * 60 * 1000) {
+          return showNotification(`Unlimited device transfer is limited to once every ${TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS} days.`, 'error', 7000);
+        }
+        const nextDeviceId = (prompt(`Enter the new device ID for ${id}`, all[id].tokenRequestedDeviceId || '') || '').trim();
+        if (!nextDeviceId) return;
+        if (!confirmTeacherAction(`Transfer unlimited access for ${id} to device ${nextDeviceId}?`)) return;
+        const now = new Date().toISOString();
+        all[id].unlimitedDeviceId = nextDeviceId;
+        all[id].lastUnlimitedDeviceTransferAt = now;
+        all[id].licenseUpdatedAt = now;
+        all[id].tokenUpdatedAt = now;
+        all[id].updatedAt = now;
+        saveAllTeachers(all);
+        appendTokenTransaction(buildTokenTransaction('unlimited_transfer', 0, 'Admin transferred unlimited access to a new device.', {
+          userId: id,
+          deviceId: nextDeviceId,
+          createdAt: now
+        }));
+        showNotification('Unlimited device transferred', 'success');
         render();
       } else if (action === 'stop-license') {
-        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin licence cannot be stopped', 'info');
-        if (!confirmTeacherAction(`Stop the licence for ${id}?`)) return;
+        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin unlimited access cannot be cleared', 'info');
+        if (!confirmTeacherAction(`Clear unlimited access for ${id}? Token balance will remain untouched.`)) return;
         const all = getAllTeachers();
         if (!all[id]) return showNotification('Teacher not found', 'error');
-        all[id].licenseStopped = true;
-        all[id].licenseRequestStatus = 'stopped';
-        all[id].licenseUpdatedAt = new Date().toISOString();
-        all[id].updatedAt = all[id].licenseUpdatedAt;
+        const now = new Date().toISOString();
+        all[id].unlimitedExpiresAt = '';
+        all[id].unlimitedDeviceId = '';
+        all[id].licenseStopped = false;
+        all[id].licenseUpdatedAt = now;
+        all[id].tokenUpdatedAt = now;
+        all[id].updatedAt = now;
         saveAllTeachers(all);
-        showNotification('Licence stopped', 'success');
+        appendTokenTransaction(buildTokenTransaction('unlimited_cleared', 0, 'Admin cleared unlimited access.', {
+          userId: id,
+          createdAt: now
+        }));
+        showNotification('Unlimited access cleared', 'success');
         render();
       } else if (action === 'reset-password') {
         const next = prompt('Enter new password for ' + id);
@@ -4609,7 +5083,9 @@ function renderQuizTake() {
               <div class="question-card" id="questionCard-${globalIndex}" data-question-card="${globalIndex}" style="margin-bottom:12px">
                 <div class="small" style="color:#0F766E;font-weight:700">${escapeHtml(currentSection.name)}</div>
                 <div class="h3">Question ${localIndex + 1} of ${currentSection.total}</div>
+                ${renderQuestionMediaAssets(qq, 'before')}
                 <div style="margin-top:8px" class="body preserve-format rich-text-output">${renderRichTextHtml(qq.question)}</div>
+                ${renderQuestionMediaAssets(qq, 'after')}
                 <div class="options" id="optionsList-${globalIndex}">${opts}</div>
               </div>
             `;
@@ -4670,7 +5146,9 @@ function renderQuizTake() {
           <div class="question-card" style="margin-bottom:12px">
             <div class="small" style="color:#0F766E;font-weight:700">${escapeHtml(currentSection.name)}</div>
             <div class="h3">Question ${position.localNumber} of ${position.totalInSubject}</div>
+            ${renderQuestionMediaAssets(qq, 'before')}
             <div style="margin-top:8px" class="body preserve-format rich-text-output">${renderRichTextHtml(qq.question)}</div>
+            ${renderQuestionMediaAssets(qq, 'after')}
             <div class="options" id="optionsList-${idx}">${opts}</div>
             <div class="question-inline-actions" style="display:flex;justify-content:space-between;margin-top:12px">
               <div>
@@ -4787,6 +5265,91 @@ function createPdfDocument(title, bodyHtml) {
 }
 
 function downloadPdfFromHtml(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
+  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  if (serverReady) {
+    return downloadPdfThroughServer(html, filename, successMessage, exportOptions)
+      .catch((error) => {
+        console.warn('Server PDF export failed. Falling back to browser rendering.', error);
+        return downloadPdfFromHtmlClientFallback(html, filename, successMessage, exportOptions);
+      });
+  }
+  return downloadPdfFromHtmlClientFallback(html, filename, successMessage, exportOptions);
+}
+
+function normalizePdfExportMargins(exportOptions = {}) {
+  const margins = exportOptions.marginsMm && typeof exportOptions.marginsMm === 'object'
+    ? exportOptions.marginsMm
+    : {};
+  const fallback = Number(exportOptions.marginMm);
+  if (Number.isFinite(fallback)) return { top: fallback, right: fallback, bottom: fallback, left: fallback };
+  return {
+    top: Number(margins.top) >= 0 ? Number(margins.top) : 10,
+    right: Number(margins.right) >= 0 ? Number(margins.right) : 10,
+    bottom: Number(margins.bottom) >= 0 ? Number(margins.bottom) : 10,
+    left: Number(margins.left) >= 0 ? Number(margins.left) : 10
+  };
+}
+
+function triggerBlobDownload(blob, filename = 'ope-export.pdf') {
+  if (typeof saveAs === 'function') {
+    saveAs(blob, filename);
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+}
+
+async function requestServerPdfExport(html, filename, exportOptions = {}, requestOptions = {}) {
+  const response = await fetch(buildApiUrl('/api/export/pdf'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      html,
+      filename,
+      inline: !!requestOptions.inline,
+      options: {
+        title: exportOptions.title || filename.replace(/\.pdf$/i, ''),
+        orientation: exportOptions.orientation === 'l' || exportOptions.orientation === 'landscape' ? 'landscape' : 'portrait',
+        margins: normalizePdfExportMargins(exportOptions)
+      }
+    })
+  });
+  if (!response.ok) {
+    let message = 'PDF export failed';
+    try {
+      const payload = await response.json();
+      if (payload && payload.error) message = payload.error;
+    } catch (error) {}
+    throw new Error(message);
+  }
+  return response.blob();
+}
+
+async function downloadPdfThroughServer(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
+  const blob = await requestServerPdfExport(html, filename, exportOptions);
+  triggerBlobDownload(blob, filename);
+  if (successMessage) showNotification(successMessage, 'success');
+  return true;
+}
+
+async function openServerPdfPreview(html, filename, exportOptions = {}) {
+  const blob = await requestServerPdfExport(html, filename, exportOptions, { inline: true });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank', 'noopener');
+  if (!win) {
+    URL.revokeObjectURL(url);
+    throw new Error('Unable to open PDF preview window');
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+  showNotification('PDF preview opened in a new tab', 'success', 5000);
+  return true;
+}
+
+function downloadPdfFromHtmlClientFallback(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
   const sourceId = 'pdf-content-source';
   const paddingPx = exportOptions.paddingPx == null ? 24 : exportOptions.paddingPx;
   const sourceWidthPx = Math.max(320, Math.round(Number(exportOptions.sourceWidthPx) || 794));
@@ -4816,6 +5379,18 @@ function downloadPdfFromHtml(html, filename, successMessage = 'PDF downloaded', 
 }
 
 function downloadPagedPdfFromHtml(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
+  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  if (serverReady) {
+    return downloadPdfThroughServer(html, filename, successMessage, exportOptions)
+      .catch((error) => {
+        console.warn('Server paged PDF export failed. Falling back to browser rendering.', error);
+        return downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage, exportOptions);
+      });
+  }
+  return downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage, exportOptions);
+}
+
+function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
   const sourceId = 'paged-pdf-content-source';
   const scale = Math.max(1.5, Number(exportOptions.scale) || 2.4);
   const contentWidthMm = Math.max(120, Number(exportOptions.contentWidthMm) || 180);
@@ -5165,6 +5740,15 @@ function waitForNextPaint() {
 }
 
 async function printHtmlAsSinglePage(html, options = {}) {
+  const filename = `${makeSafeFilenamePart(options.title || 'print-preview', 'print-preview')}.pdf`;
+  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  if (serverReady) {
+    try {
+      return await openServerPdfPreview(html, filename, options);
+    } catch (error) {
+      console.warn('Server print preview failed. Falling back to browser canvas print.', error);
+    }
+  }
   const win = window.open('', '_blank', 'width=960,height=760');
   if (!win) throw new Error('Unable to open print window');
   win.document.write('<html><head><title>Preparing Print...</title></head><body style="font-family:Arial,sans-serif;padding:24px">Preparing print preview...</body></html>');
@@ -6407,12 +6991,26 @@ function getScoreTone(percent) {
 
 function getPerformanceBandLabel(percent) {
   const value = clampPercent(percent);
-  if (value >= 75) return 'Excellent';
-  if (value >= 70) return 'Very Good';
-  if (value >= 65) return 'Good';
-  if (value >= 50) return 'Credit';
-  if (value >= 40) return 'Pass';
+  if (value >= 91) return 'Excellent';
+  if (value >= 81) return 'Very Good';
+  if (value >= 71) return 'Good';
+  if (value >= 61) return 'Credit';
+  if (value >= 50) return 'Pass';
+  if (value >= 45) return 'Borderline';
+  if (value >= 40) return 'Poor';
   return 'Fail';
+}
+
+function getCertificateGradeProfile(percent) {
+  const value = clampPercent(percent);
+  if (value >= 91) return { label: 'Excellent', range: '91 - 100', remark: 'You have shown outstanding mastery with very high accuracy and a complete understanding of the work.' };
+  if (value >= 81) return { label: 'Very Good', range: '81 - 90', remark: 'You have shown strong performance with solid understanding and only minor errors.' };
+  if (value >= 71) return { label: 'Good', range: '71 - 80', remark: 'You have shown above average performance and you understand most concepts, though a few gaps still remain.' };
+  if (value >= 61) return { label: 'Credit', range: '61 - 70', remark: 'You have met the required standard with a satisfactory and reasonable understanding of the work.' };
+  if (value >= 50) return { label: 'Pass', range: '50 - 60', remark: 'You have shown basic acceptable performance, but you still need noticeable improvement.' };
+  if (value >= 45) return { label: 'Borderline', range: '45 - 49', remark: 'You have partial understanding, but you need significant revision to become more secure.' };
+  if (value >= 40) return { label: 'Poor', range: '40 - 44', remark: 'You have major gaps at the moment and you need clear remedial support and extra practice.' };
+  return { label: 'Fail', range: '0 - 39', remark: 'You have not yet met the minimum standard, so you need serious revision and closer support.' };
 }
 
 function formatScoreValue(value) {
@@ -6657,6 +7255,7 @@ function getResultInfoIconSvg(kind = 'file') {
     answered: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2.5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 12 2.5Zm4.02 7.94-4.77 5.24a.75.75 0 0 1-1.1.03L7.7 13.36a.75.75 0 1 1 1.1-1.02l1.9 2.04 4.2-4.62a.75.75 0 1 1 1.12 1.01Z" fill="currentColor"/></svg>`,
     email: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4.75 5A2.75 2.75 0 0 0 2 7.75v8.5A2.75 2.75 0 0 0 4.75 19h14.5A2.75 2.75 0 0 0 22 16.25v-8.5A2.75 2.75 0 0 0 19.25 5H4.75Zm0 1.5h14.5c.43 0 .8.22 1.02.55l-7 4.95a2.25 2.25 0 0 1-2.54 0l-7-4.95c.22-.33.59-.55 1.02-.55Zm-1.25 9.75V8.83l6.34 4.48a3.75 3.75 0 0 0 4.32 0l6.34-4.48v7.42c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25Z" fill="currentColor"/></svg>`,
     quiz: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7.75 3A2.75 2.75 0 0 0 5 5.75v12.5A2.75 2.75 0 0 0 7.75 21h8.5A2.75 2.75 0 0 0 19 18.25V8.81a2.75 2.75 0 0 0-.81-1.94l-2.06-2.06A2.75 2.75 0 0 0 14.19 4H7.75Zm0 1.5h6.19c.33 0 .65.13.88.37l2.06 2.06c.23.23.37.55.37.88v10.44c0 .69-.56 1.25-1.25 1.25h-8.5c-.69 0-1.25-.56-1.25-1.25V5.75c0-.69.56-1.25 1.25-1.25Zm1.5 6.25a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Zm0 3.5a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z" fill="currentColor"/></svg>`,
+    device: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7.75 2h8.5A2.75 2.75 0 0 1 19 4.75v14.5A2.75 2.75 0 0 1 16.25 22h-8.5A2.75 2.75 0 0 1 5 19.25V4.75A2.75 2.75 0 0 1 7.75 2Zm0 1.5c-.69 0-1.25.56-1.25 1.25v14.5c0 .69.56 1.25 1.25 1.25h8.5c.69 0 1.25-.56 1.25-1.25V4.75c0-.69-.56-1.25-1.25-1.25h-8.5Zm2.5 2.25h3.5a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1 0-1.5Zm1.75 11.5a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2Z" fill="currentColor"/></svg>`,
     performance: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2.5c-1.33 0-2.42.93-2.68 2.18a2.75 2.75 0 0 0-2.64 2.37 2.75 2.75 0 0 0-1.63 4.75 2.75 2.75 0 0 0 1.63 4.75 2.75 2.75 0 0 0 2.64 2.37A2.75 2.75 0 0 0 12 21.5c1.33 0 2.42-.93 2.68-2.18a2.75 2.75 0 0 0 2.64-2.37 2.75 2.75 0 0 0 1.63-4.75 2.75 2.75 0 0 0-1.63-4.75 2.75 2.75 0 0 0-2.64-2.37A2.75 2.75 0 0 0 12 2.5Zm0 6a3.5 3.5 0 1 1-3.5 3.5A3.5 3.5 0 0 1 12 8.5Z" fill="currentColor"/></svg>`
   };
   return icons[kind] || icons.quiz;
@@ -6758,14 +7357,15 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
   const studentName = escapeHtml((submission.name || '').toUpperCase() || 'STUDENT');
   const rankText = rankValue || '-';
   const percent = clampPercent(submission.percent || 0);
+  const gradeProfile = getCertificateGradeProfile(percent);
   const identityLabel = (submission.email || '').includes('@') ? 'Email' : 'Registration No';
+  const ipAddress = (submission.monitoring && submission.monitoring.ipAddress) ? submission.monitoring.ipAddress : (submission.ipAddress || '');
   const hasAdjustedScore = hasManualScoreOverride(submission);
   const adjustedNote = hasAdjustedScore
     ? (submission.manualScoreEditedAt
       ? `Teacher adjusted score on ${new Date(submission.manualScoreEditedAt).toLocaleString()}`
       : 'Teacher adjusted score applied')
     : '';
-  const displayedStatus = submission.resultStatus || (percent >= (submission.passMark || quiz.passMark || 50) ? 'Pass' : 'Fail');
   const details = [
     {
       kind: 'submitted',
@@ -6786,6 +7386,11 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
       kind: 'quiz',
       label: 'Quiz Name',
       value: quizName
+    },
+    {
+      kind: 'device',
+      label: 'IP Address',
+      value: escapeHtml(ipAddress || 'Not captured')
     }
   ];
   return `
@@ -6814,11 +7419,15 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
               <div class="cert-score-percent">${percent}%</div>
             </div>
           </div>
-          <div class="cert-status-badge ${displayedStatus === 'Pass' ? 'cert-status-pass' : 'cert-status-fail'}">${escapeHtml(displayedStatus)}</div>
+          <div class="cert-status-badge cert-status-grade">${escapeHtml(gradeProfile.label)}</div>
           ${hasAdjustedScore ? `<div class="cert-adjusted-note">${escapeHtml(adjustedNote)}</div>` : ''}
         </div>
 
         <div class="cert-rank">RANK: ${escapeHtml(rankText)}</div>
+        <div class="cert-remark-card avoid-break">
+          <div class="cert-remark-title">${escapeHtml(gradeProfile.label)} • ${escapeHtml(gradeProfile.range)}</div>
+          <div class="cert-remark-copy">${escapeHtml(gradeProfile.remark)}</div>
+        </div>
 
         <div class="cert-details-grid">
           ${details.map((item) => `
@@ -6879,10 +7488,12 @@ function getCertificateResultCss() {
     .cert-score-main{font-size:52px;font-weight:900;line-height:1.04;margin-top:6px;color:#111827}
     .cert-score-percent{font-size:38px;color:#2F80ED;font-weight:900;line-height:1.04;margin-top:4px}
     .cert-status-badge{padding:6px 18px;border-radius:999px;font-size:13px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;background:#E8F1FF;color:#1D4ED8}
-    .cert-status-pass{background:#DCFCE7;color:#166534}
-    .cert-status-fail{background:#EFF6FF;color:#DC2626}
+    .cert-status-grade{background:#DBEAFE;color:#1D4ED8}
     .cert-adjusted-note{font-size:11px;color:#92400E;background:#FFF7ED;border:1px solid #FED7AA;border-radius:999px;padding:6px 12px;text-align:center}
     .cert-rank{width:min(440px,92%);margin:2px auto 18px;text-align:center;background:linear-gradient(180deg,#56CCF2 0%,#2F80ED 100%);border:2px solid #2F80ED;color:#ffffff;border-radius:999px;padding:12px 18px;font-size:22px;font-weight:900;letter-spacing:.08em;box-shadow:0 10px 20px rgba(47,128,237,.22)}
+    .cert-remark-card{border:2px solid rgba(47,128,237,.28);background:#F8FAFC;border-radius:18px;padding:14px 16px;margin:0 0 16px}
+    .cert-remark-title{font-size:14px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#2F80ED}
+    .cert-remark-copy{margin-top:8px;font-size:15px;line-height:1.65;color:#1F2937}
     .cert-details-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:4px}
     .cert-detail-card{border:2px solid rgba(47,128,237,.34);background:#F8FAFC;border-radius:16px;padding:14px;min-height:96px;display:flex;gap:12px;align-items:flex-start}
     .cert-detail-icon{width:46px;height:46px;min-width:46px;border-radius:14px;background:#2F80ED;color:#ffffff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(47,128,237,.18)}
@@ -7747,11 +8358,93 @@ function showCreateQuizModal(editQuizId = '') {
     const assignedClassSelect = document.getElementById('cqAssignedClass');
     const assignedClassHelp = document.getElementById('cqAssignedClassHelp');
     const assignedClassGroup = document.getElementById('cqAssignedClassGroup');
-    const trialWasAvailable = !editingQuiz && getTeacherTrialStatus(getCurrentTeacher()).available;
+    const renderSubjectQuestionImages = (row) => {
+      const host = row.querySelector('.subject-image-list');
+      if (!host) return;
+      const groups = Array.isArray(row._questionImages) ? row._questionImages : [];
+      if (!groups.length) {
+        host.innerHTML = '<div class="small" style="padding:12px;border:1px dashed #BFDBFE;border-radius:14px;background:#F8FAFC;color:#475569">No question image added for this subject yet.</div>';
+        return;
+      }
+      host.innerHTML = groups.map((group, index) => `
+        <div class="card" data-subject-image-index="${index}" style="padding:12px;border:1px solid #DBEAFE;box-shadow:none">
+          <div style="display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr) auto;gap:12px;align-items:flex-start">
+            <div>
+              ${group.src ? `<img src="${group.src.replace(/"/g, '&quot;')}" alt="${escapeHtml(group.altText || group.fileName || 'Question image')}" style="display:block;width:100%;max-width:150px;height:auto;border-radius:12px;border:1px solid #BFDBFE;background:#EFF6FF" />` : '<div class="small" style="padding:20px 12px;border:1px dashed #BFDBFE;border-radius:12px;background:#EFF6FF;text-align:center;color:#475569">Choose image</div>'}
+              <div class="small" style="margin-top:8px;color:#475569">${escapeHtml(group.fileName || 'No image selected')}</div>
+            </div>
+            <div style="display:grid;gap:10px">
+              <div>
+                <label class="small">Question number(s)</label>
+                <input type="text" class="input-beautiful subject-image-numbers" value="${escapeHtml(group.questionNumbersText || '')}" placeholder="e.g. 1, 3, 5" />
+                <div class="small" style="margin-top:6px;line-height:1.55">Use commas to separate question numbers. Example: <strong>1, 3, 5</strong> means this same image will show in Questions 1, 3, and 5 for this subject.</div>
+              </div>
+              <div>
+                <label class="small">Image position</label>
+                <select class="input-beautiful subject-image-placement">
+                  <option value="before" ${normalizeQuestionImagePlacement(group.placement) === 'before' ? 'selected' : ''}>Before the question</option>
+                  <option value="after" ${normalizeQuestionImagePlacement(group.placement) === 'after' ? 'selected' : ''}>After the question</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <button type="button" class="btn btn-secondary btn-sm subject-image-upload-btn">${group.src ? 'Replace Image' : 'Choose Image'}</button>
+              <button type="button" class="btn btn-ghost btn-sm subject-image-remove-btn">Remove</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+      host.querySelectorAll('[data-subject-image-index]').forEach((card) => {
+        const imageIndex = parseInt(card.dataset.subjectImageIndex || '-1', 10);
+        if (imageIndex < 0 || !row._questionImages[imageIndex]) return;
+        const numbersInput = card.querySelector('.subject-image-numbers');
+        const placementSelect = card.querySelector('.subject-image-placement');
+        const uploadBtn = card.querySelector('.subject-image-upload-btn');
+        const removeBtn = card.querySelector('.subject-image-remove-btn');
+        if (numbersInput) numbersInput.oninput = (event) => {
+          row._questionImages[imageIndex].questionNumbersText = event.target.value || '';
+        };
+        if (placementSelect) placementSelect.onchange = (event) => {
+          row._questionImages[imageIndex].placement = normalizeQuestionImagePlacement(event.target.value || 'before');
+        };
+        if (uploadBtn) uploadBtn.onclick = () => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'image/*';
+          input.onchange = async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            try {
+              row._questionImages[imageIndex] = {
+                ...row._questionImages[imageIndex],
+                src: await readImageFileAsDataUrl(file),
+                fileName: file.name || row._questionImages[imageIndex].fileName,
+                altText: file.name || row._questionImages[imageIndex].altText || 'Question image'
+              };
+              renderSubjectQuestionImages(row);
+              showNotification('Question image added for this subject', 'success');
+            } catch (error) {
+              console.error(error);
+              showNotification('Could not read the selected image', 'error');
+            }
+          };
+          input.click();
+        };
+        if (removeBtn) removeBtn.onclick = () => {
+          row._questionImages.splice(imageIndex, 1);
+          renderSubjectQuestionImages(row);
+        };
+      });
+    };
     const createSubjectRow = (subject = {}) => {
       const row = document.createElement('div');
       row.className = 'subject-row';
       row._importedQuestions = Array.isArray(subject.importedQuestions) ? subject.importedQuestions : [];
+      row._questionImages = (
+        Array.isArray(subject.questionImages) && subject.questionImages.length
+          ? subject.questionImages
+          : deriveSubjectQuestionImagesFromQuestions(row._importedQuestions)
+      ).map((group, index) => createEditableSubjectQuestionImage(group, index));
       row.innerHTML = `
         <div class="subject-field">
           <label class="small">Subject name</label>
@@ -7776,8 +8469,17 @@ function showCreateQuizModal(editQuizId = '') {
             <span class="subject-time-unit">marks</span>
           </div>
         </div>
+        <div class="subject-field" style="grid-column:1/-1">
+          <label class="small">Question images (optional)</label>
+          <div class="small" style="margin-top:6px;line-height:1.65">Add an image for any question that needs a diagram, chart, or illustration. You can use the same image for many question numbers and choose whether it shows before or after the question text.</div>
+          <div class="subject-image-list" style="display:grid;gap:10px;margin-top:10px"></div>
+          <div style="display:flex;justify-content:flex-start;margin-top:10px">
+            <button type="button" class="btn btn-ghost btn-sm subject-add-image-btn">Add Question Image</button>
+          </div>
+        </div>
         <button type="button" class="subject-remove-btn" aria-label="Remove subject">✕</button>
       `;
+      renderSubjectQuestionImages(row);
       row.querySelector('.subject-upload-btn').onclick = () => {
         const inp = document.createElement('input');
         inp.type = 'file';
@@ -7794,6 +8496,10 @@ function showCreateQuizModal(editQuizId = '') {
           }
         };
         inp.click();
+      };
+      row.querySelector('.subject-add-image-btn').onclick = () => {
+        row._questionImages.push(createEditableSubjectQuestionImage({}, row._questionImages.length));
+        renderSubjectQuestionImages(row);
       };
       row.querySelector('.subject-remove-btn').onclick = () => {
         row.remove();
@@ -7827,7 +8533,8 @@ function showCreateQuizModal(editQuizId = '') {
         name,
         questionCount: countValue === '' ? null : (parseInt(countValue, 10) || 0),
         totalMarks: marksValue === '' ? null : (parseFloat(marksValue) || 0),
-        importedQuestions: (row._importedQuestions || []).filter(isMeaningfulQuestion)
+        importedQuestions: (row._importedQuestions || []).filter(isMeaningfulQuestion),
+        questionImages: serializeEditableSubjectQuestionImages(row._questionImages || [])
       };
     }).filter(subject => subject.name);
     const updateDerivedTotalMarks = () => {
@@ -7875,7 +8582,10 @@ function showCreateQuizModal(editQuizId = '') {
         name: subject.name || 'General',
         questionCount: subject.questionCount ?? null,
         totalMarks: subject.totalMarks ?? subject.maxScore ?? null,
-        importedQuestions: Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions
+        importedQuestions: Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions,
+        questionImages: Array.isArray(subject.questionImages) && subject.questionImages.length
+          ? subject.questionImages
+          : deriveSubjectQuestionImagesFromQuestions(Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions)
       }));
       document.getElementById('cqShuffleQs').checked = editingQuiz.shuffleQs !== false;
       document.getElementById('cqShuffleOpts').checked = editingQuiz.shuffleOpts !== false;
@@ -7912,7 +8622,7 @@ function showCreateQuizModal(editQuizId = '') {
           : (subjectIndex === 0 ? pastedBank : []);
         return {
           name: subject.name || `Subject ${subjectIndex + 1}`,
-          questions: sourceBank.map((item, index) => normalizeQuestionForStorage({ ...item, subject: subject.name }, index, subject.name || 'General'))
+          questions: buildQuestionsWithSubjectImages(sourceBank, subject.name || `Subject ${subjectIndex + 1}`, subject.questionImages || [])
         };
       }).filter((subject) => (subject.questions || []).length);
       if (!previewSubjects.length) return showNotification('No questions to preview yet. Upload or paste questions first.', 'error');
@@ -7952,7 +8662,9 @@ function showCreateQuizModal(editQuizId = '') {
           <div class="card quiz-editor-question-card">
             <div class="h3">Question ${previewQuestionIndex + 1} of ${currentSubject.questions.length}</div>
             <div class="small" style="margin:6px 0 14px">${escapeHtml(currentSubject.name)}</div>
+            ${renderQuestionMediaAssets(currentQuestion, 'before')}
             <div class="preserve-format rich-text-output" style="font-weight:700;line-height:1.7">${renderRichTextHtml(currentQuestion?.question || '')}</div>
+            ${renderQuestionMediaAssets(currentQuestion, 'after')}
             <div class="quiz-editor-options-grid" style="margin-top:16px">
               ${(currentQuestion?.options || []).map((option, optionIndex) => {
                 const letter = String.fromCharCode(65 + optionIndex);
@@ -8392,14 +9104,36 @@ function computeSubmissionTopicBreakdown(quiz, submission) {
   }));
 }
 
-async function getClientIpAddress() {
+async function getClientTrackingContext() {
+  try {
+    const response = await fetch(buildApiUrl('/api/client-context'), { cache: 'no-store' });
+    if (response.ok) {
+      const data = await response.json();
+      return {
+        ipAddress: (data.ipAddress || '').toString().trim(),
+        userAgent: (data.userAgent || navigator.userAgent || '').toString(),
+        requestedAt: data.requestedAt || new Date().toISOString(),
+        deviceId: getAppDeviceId()
+      };
+    }
+  } catch (error) {}
   try {
     const res = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
-    if (!res.ok) return '';
+    if (!res.ok) return { ipAddress: '', userAgent: navigator.userAgent || '', requestedAt: new Date().toISOString(), deviceId: getAppDeviceId() };
     const data = await res.json();
-    return data.ip || '';
+    return {
+      ipAddress: data.ip || '',
+      userAgent: navigator.userAgent || '',
+      requestedAt: new Date().toISOString(),
+      deviceId: getAppDeviceId()
+    };
   } catch(e) {
-    return '';
+    return {
+      ipAddress: '',
+      userAgent: navigator.userAgent || '',
+      requestedAt: new Date().toISOString(),
+      deviceId: getAppDeviceId()
+    };
   }
 }
 
@@ -8962,7 +9696,7 @@ function renderStudentEntry() {
       state.currentSubmission = null; // reset
       state.view = 'take';
       // set student details into submission placeholder
-      state.currentSubmission = { name, email: studentKey, registrationNo, correctionContact: email || '', correctionContactChannel: email ? 'email' : '', whatsappNumber: '', answers: {}, flagged: {}, quizId: quiz.id, allQuestions: [], currentIndex: 0, examStarted: false, startedAt: '', snapshots: [], attemptNo: usedAttempts + 1, monitoring: { tabSwitches: 0, fullscreenExits: 0, copyAttempts: 0, screenshotAttempts: 0, webcamEnabled: false, ipAddress: '', userAgent: navigator.userAgent || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '' } };
+      state.currentSubmission = { name, email: studentKey, registrationNo, correctionContact: email || '', correctionContactChannel: email ? 'email' : '', whatsappNumber: '', answers: {}, flagged: {}, quizId: quiz.id, allQuestions: [], currentIndex: 0, examStarted: false, startedAt: '', snapshots: [], attemptNo: usedAttempts + 1, monitoring: { tabSwitches: 0, fullscreenExits: 0, copyAttempts: 0, screenshotAttempts: 0, webcamEnabled: false, ipAddress: '', userAgent: navigator.userAgent || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '', deviceId: getAppDeviceId(), ipCapturedAt: '' } };
       const draft = loadExamDraft(quiz.id, studentKey);
       if (draft && confirm('A saved exam draft was found. Resume from where you stopped?')) {
         state.currentSubmission.answers = draft.answers || {};
@@ -8974,7 +9708,14 @@ function renderStudentEntry() {
       state.currentSubmission.webcamRequested = webcamOn;
       state.currentSubmission.monitoring.webcamEnabled = webcamOn;
       if (webcamOn) showNotification('This quiz requires camera monitoring. Allow camera access on the next screen to continue.', 'warning', 7000);
-      getClientIpAddress().then(ip => { if (state.currentSubmission && state.currentSubmission.quizId === quiz.id) state.currentSubmission.monitoring.ipAddress = ip; });
+      getClientTrackingContext().then((context) => {
+        if (state.currentSubmission && state.currentSubmission.quizId === quiz.id) {
+          state.currentSubmission.monitoring.ipAddress = context.ipAddress || '';
+          state.currentSubmission.monitoring.userAgent = context.userAgent || navigator.userAgent || '';
+          state.currentSubmission.monitoring.deviceId = context.deviceId || getAppDeviceId();
+          state.currentSubmission.monitoring.ipCapturedAt = context.requestedAt || new Date().toISOString();
+        }
+      });
       render();
     };
     document.getElementById('previewLink').onclick = async ()=>{
@@ -9092,12 +9833,21 @@ function stopWebcam() {
   } catch (e) { console.warn(e); }
 }
 
-function collectAndSubmit() {
+async function collectAndSubmit() {
   try {
     const sub = state.currentSubmission;
     if (!sub) return showNotification('Nothing to submit','error');
     if (hasSubmittedBefore(sub.quizId, sub.email)) return showNotification('This email has already submitted this quiz', 'error');
     const quiz = getAllQuizzes()[sub.quizId] || state.currentQuiz || {};
+    const trackingContext = await getClientTrackingContext();
+    sub.monitoring = {
+      ...(sub.monitoring || {}),
+      ipAddress: (sub.monitoring && sub.monitoring.ipAddress) || trackingContext.ipAddress || '',
+      userAgent: (sub.monitoring && sub.monitoring.userAgent) || trackingContext.userAgent || navigator.userAgent || '',
+      timezone: (sub.monitoring && sub.monitoring.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      deviceId: (sub.monitoring && sub.monitoring.deviceId) || trackingContext.deviceId || getAppDeviceId(),
+      ipCapturedAt: (sub.monitoring && sub.monitoring.ipCapturedAt) || trackingContext.requestedAt || new Date().toISOString()
+    };
     const all = sub.allQuestions || [];
     const grade = buildSubmissionGradeState(sub, quiz, gradeSubmissionForQuiz(sub, quiz));
     const score = grade.score;
