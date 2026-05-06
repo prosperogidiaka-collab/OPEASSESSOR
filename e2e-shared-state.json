@@ -1,0 +1,271 @@
+{
+  "quizzes": {
+    "E2EUJRQMX": {
+      "id": "E2EUJRQMX",
+      "examName": "E2E Sync Quiz moujrqmx",
+      "title": "E2E Sync Quiz moujrqmx",
+      "password": "",
+      "timeLimit": 5,
+      "maxGrade": 1,
+      "attemptLimit": 1,
+      "passMark": 50,
+      "negativeMarkEnabled": false,
+      "negativeMarkValue": 0,
+      "showInstantResult": true,
+      "showTopicsAfterSubmission": true,
+      "subjects": [
+        {
+          "name": "Mathematics",
+          "questionCount": 1,
+          "totalMarks": 1,
+          "questions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ],
+          "bankQuestions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ]
+        }
+      ],
+      "questionPickCount": 0,
+      "createdAt": "2026-05-06T21:06:26.019Z",
+      "editedAt": "",
+      "updatedAt": "2026-05-06T21:06:26.019Z",
+      "teacherId": "teacher.moujrqmx@example.com",
+      "shuffleQs": false,
+      "shuffleOpts": false,
+      "verticalLayout": false,
+      "rankingEnabled": false,
+      "whitelist": [],
+      "audienceMode": "public",
+      "assignedClassName": "",
+      "calculatorType": "none",
+      "webcamRequired": false,
+      "certificateSignatories": [],
+      "scheduleStart": "",
+      "scheduleEnd": ""
+    },
+    "E2EUJTP9T": {
+      "id": "E2EUJTP9T",
+      "examName": "E2E Sync Quiz moujtp9t",
+      "title": "E2E Sync Quiz moujtp9t",
+      "password": "",
+      "timeLimit": 5,
+      "maxGrade": 1,
+      "attemptLimit": 1,
+      "passMark": 50,
+      "negativeMarkEnabled": false,
+      "negativeMarkValue": 0,
+      "showInstantResult": true,
+      "showTopicsAfterSubmission": true,
+      "subjects": [
+        {
+          "name": "Mathematics",
+          "questionCount": 1,
+          "totalMarks": 1,
+          "questions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ],
+          "bankQuestions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ]
+        }
+      ],
+      "questionPickCount": 0,
+      "createdAt": "2026-05-06T21:07:56.210Z",
+      "editedAt": "",
+      "updatedAt": "2026-05-06T21:07:56.210Z",
+      "teacherId": "teacher.moujtp9t@example.com",
+      "shuffleQs": false,
+      "shuffleOpts": false,
+      "verticalLayout": false,
+      "rankingEnabled": false,
+      "whitelist": [],
+      "audienceMode": "public",
+      "assignedClassName": "",
+      "calculatorType": "none",
+      "webcamRequired": false,
+      "certificateSignatories": [],
+      "scheduleStart": "",
+      "scheduleEnd": "",
+      "cloudSyncedAt": "2026-05-06T21:07:56.229Z"
+    },
+    "E2EUJW13F": {
+      "id": "E2EUJW13F",
+      "examName": "E2E Sync Quiz moujw13f",
+      "title": "E2E Sync Quiz moujw13f",
+      "password": "",
+      "timeLimit": 5,
+      "maxGrade": 1,
+      "attemptLimit": 1,
+      "passMark": 50,
+      "negativeMarkEnabled": false,
+      "negativeMarkValue": 0,
+      "showInstantResult": true,
+      "showTopicsAfterSubmission": true,
+      "subjects": [
+        {
+          "name": "Mathematics",
+          "questionCount": 1,
+          "totalMarks": 1,
+          "questions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ],
+          "bankQuestions": [
+            {
+              "question": "2 + 2 = ?",
+              "options": [
+                "3",
+                "4",
+                "5",
+                "6"
+              ],
+              "answer": "B",
+              "mark": 1,
+              "topic": "Arithmetic"
+            }
+          ]
+        }
+      ],
+      "questionPickCount": 0,
+      "createdAt": "2026-05-06T21:09:48.355Z",
+      "editedAt": "",
+      "updatedAt": "2026-05-06T21:09:48.355Z",
+      "teacherId": "teacher.moujw13f@example.com",
+      "shuffleQs": false,
+      "shuffleOpts": false,
+      "verticalLayout": false,
+      "rankingEnabled": false,
+      "whitelist": [],
+      "audienceMode": "public",
+      "assignedClassName": "",
+      "calculatorType": "none",
+      "webcamRequired": false,
+      "certificateSignatories": [],
+      "scheduleStart": "",
+      "scheduleEnd": "",
+      "cloudSyncedAt": "2026-05-06T21:09:48.377Z"
+    }
+  },
+  "submissions": [],
+  "teachers": {
+    "prosperogidiaka@gmail.com": {
+      "teacherId": "prosperogidiaka@gmail.com",
+      "email": "prosperogidiaka@gmail.com",
+      "password": "7767737Prosper",
+      "role": "super_admin",
+      "name": "",
+      "phone": "",
+      "supportEmail": "prosperogidiaka@gmail.com",
+      "supportWhatsapp": "",
+      "tokenBalance": 9007199254740991,
+      "tokenUpdatedAt": "2026-05-06T21:10:00.706Z",
+      "createdAt": "2026-05-06T21:10:00.706Z",
+      "updatedAt": "2026-05-06T21:10:00.706Z"
+    },
+    "teacher.moujrqmx@example.com": {
+      "teacherId": "teacher.moujrqmx@example.com",
+      "email": "teacher.moujrqmx@example.com",
+      "password": "SyncPass!moujrqmx",
+      "role": "teacher",
+      "name": "",
+      "phone": "",
+      "tokenBalance": 5,
+      "tokenUpdatedAt": "2026-05-06T21:06:26.010Z",
+      "tokenRequestStatus": "",
+      "unlimitedExpiresAt": "",
+      "unlimitedDeviceId": "",
+      "createdAt": "2026-05-06T21:06:25.821Z",
+      "updatedAt": "2026-05-06T21:06:26.010Z",
+      "licenseUpdatedAt": "2026-05-06T21:06:26.010Z"
+    },
+    "teacher.moujtp9t@example.com": {
+      "teacherId": "teacher.moujtp9t@example.com",
+      "email": "teacher.moujtp9t@example.com",
+      "password": "SyncPass!moujtp9t",
+      "role": "teacher",
+      "name": "",
+      "phone": "",
+      "tokenBalance": 5,
+      "tokenUpdatedAt": "2026-05-06T21:07:56.163Z",
+      "tokenRequestStatus": "",
+      "unlimitedExpiresAt": "",
+      "unlimitedDeviceId": "",
+      "createdAt": "2026-05-06T21:07:56.003Z",
+      "updatedAt": "2026-05-06T21:07:56.163Z",
+      "licenseUpdatedAt": "2026-05-06T21:07:56.163Z"
+    },
+    "teacher.moujw13f@example.com": {
+      "teacherId": "teacher.moujw13f@example.com",
+      "email": "teacher.moujw13f@example.com",
+      "password": "SyncPass!moujw13f",
+      "role": "teacher",
+      "name": "",
+      "phone": "",
+      "tokenBalance": 5,
+      "tokenUpdatedAt": "2026-05-06T21:09:48.314Z",
+      "tokenRequestStatus": "",
+      "unlimitedExpiresAt": "",
+      "unlimitedDeviceId": "",
+      "createdAt": "2026-05-06T21:09:48.163Z",
+      "updatedAt": "2026-05-06T21:09:48.314Z",
+      "licenseUpdatedAt": "2026-05-06T21:09:48.314Z"
+    }
+  },
+  "students": {},
+  "tokenTransactions": []
+}

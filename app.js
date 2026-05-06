@@ -34,6 +34,7 @@ const NETWORK_STATE_KEY_MAP = {
 };
 const DEFAULT_NETWORK_SYNC_POLL_MS = 5000;
 const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
+const DEFAULT_STARTUP_SYNC_TIMEOUT_MS = 4000;
 const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
 const MAX_PORTABLE_LINK_LENGTH = 3500;
 const DEFAULT_SUPPORT_SETTINGS = {
@@ -116,9 +117,11 @@ let networkSyncInFlight = null;
 let networkSyncFailed = false;
 let networkSyncFailureMessage = '';
 const pendingNetworkWrites = new Set();
+const pendingNetworkWritePromises = new Map();
 const dirtyNetworkKeys = new Set();
 let networkSyncRetryTimer = null;
 let networkSyncEventsBound = false;
+let lastNetworkPullAt = 0;
 let _historyApplying = false;
 let _lastHistoryView = '';
 let _lastRenderedView = '';
@@ -171,6 +174,10 @@ async function flushPendingNetworkWrites(keys = [], options = {}) {
   if (!targetKeys.length) return true;
   let ok = true;
   for (const key of targetKeys) {
+    if (pendingNetworkWritePromises.has(key)) {
+      const completed = await pendingNetworkWritePromises.get(key).catch(() => false);
+      if (completed && !dirtyNetworkKeys.has(key)) continue;
+    }
     const pushed = await pushNetworkValue(key, readLocalStorageValue(key), { skipRetrySchedule: true });
     if (!pushed) ok = false;
   }
@@ -378,7 +385,7 @@ function applySharedStateUiRefresh(changed = false, options = {}) {
   const examHandled = handleActiveExamSyncState();
   if (examHandled) return changed || hydratedPrefill;
   if (shouldDeferStudentSyncRerender()) return changed || hydratedPrefill;
-  if (state.view !== 'take' && (changed || hydratedPrefill || options.forceRender)) render();
+  if (state.view !== 'take' && (changed || hydratedPrefill || options.forceRender) && !options.suppressRender) render();
   return changed || hydratedPrefill;
 }
 
@@ -401,6 +408,54 @@ async function runSharedSyncCycle(options = {}) {
   await flushPendingNetworkWrites([], { pullAfter: false });
   const changed = await pullNetworkState(!!options.forcePull);
   return applySharedStateUiRefresh(changed, options);
+}
+
+function withTimeout(promise, timeoutMs = DEFAULT_STARTUP_SYNC_TIMEOUT_MS, fallbackValue = false) {
+  const waitMs = Math.max(500, Number(timeoutMs) || DEFAULT_STARTUP_SYNC_TIMEOUT_MS);
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallbackValue), waitMs);
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function shouldHydrateSharedStateOnStartup(params = new URLSearchParams()) {
+  if (!canUseNetworkSync()) return false;
+  if (params.has('q') || params.has('import') || params.has('r') || (params.has('resultQuiz') && params.has('resultKey'))) return true;
+  if (normalizeEmail(state.teacherId || getTeacherId())) return true;
+  if (!Object.keys(getAllQuizzes()).length) return true;
+  return Object.keys(getAllTeachers()).length <= 1;
+}
+
+async function pullSharedStateSilently(options = {}) {
+  if (!canUseNetworkSync()) return false;
+  await flushPendingNetworkWrites([], { pullAfter: false });
+  return withTimeout(
+    pullNetworkState(options.forcePull !== false),
+    options.timeoutMs || DEFAULT_STARTUP_SYNC_TIMEOUT_MS,
+    false
+  );
+}
+
+async function hydrateSharedStateBeforeFirstRender(params = new URLSearchParams()) {
+  if (!shouldHydrateSharedStateOnStartup(params)) return false;
+  return pullSharedStateSilently({ forcePull: true, timeoutMs: DEFAULT_STARTUP_SYNC_TIMEOUT_MS });
+}
+
+async function openTeacherWorkspace(targetView = 'teacher', options = {}) {
+  const sessionTeacherId = normalizeEmail(state.teacherId || getTeacherId());
+  if (sessionTeacherId && canUseNetworkSync()) {
+    await pullSharedStateSilently({
+      forcePull: options.forcePull !== false,
+      timeoutMs: options.timeoutMs || DEFAULT_STARTUP_SYNC_TIMEOUT_MS
+    });
+  }
+  state.view = isTeacherLoggedIn() ? targetView : 'teacher.login';
+  render();
 }
 
 function bindNetworkSyncWindowEvents() {
@@ -1127,6 +1182,7 @@ async function pullNetworkState(force = false) {
       networkSyncReady = true;
       networkSyncFailed = false;
       networkSyncFailureMessage = '';
+      lastNetworkPullAt = Date.now();
       return changed;
     })
     .catch((error) => {
@@ -1146,34 +1202,39 @@ async function pushNetworkValue(key, value, options = {}) {
     return false;
   }
   pendingNetworkWrites.add(key);
-  try {
-    const res = await fetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value })
-    });
-    if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Failed to save shared state'));
-    networkSyncReady = true;
-    networkSyncFailed = false;
-    networkSyncFailureMessage = '';
-    const latestValue = readLocalStorageValue(key);
-    if (JSON.stringify(latestValue) === JSON.stringify(value)) {
-      clearNetworkKeyDirty(key);
-    } else {
+  const writePromise = (async () => {
+    try {
+      const res = await fetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value })
+      });
+      if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Failed to save shared state'));
+      networkSyncReady = true;
+      networkSyncFailed = false;
+      networkSyncFailureMessage = '';
+      const latestValue = readLocalStorageValue(key);
+      if (JSON.stringify(latestValue) === JSON.stringify(value)) {
+        clearNetworkKeyDirty(key);
+      } else {
+        markNetworkKeyDirty(key);
+        schedulePendingNetworkFlush(300);
+      }
+      return true;
+    } catch (err) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = err && err.message ? err.message : 'Failed to save shared state';
       markNetworkKeyDirty(key);
-      schedulePendingNetworkFlush(300);
+      console.error('Network sync save failed for', key, err);
+      if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
+      return false;
+    } finally {
+      pendingNetworkWrites.delete(key);
+      pendingNetworkWritePromises.delete(key);
     }
-    return true;
-  } catch (err) {
-    networkSyncFailed = true;
-    networkSyncFailureMessage = err && err.message ? err.message : 'Failed to save shared state';
-    markNetworkKeyDirty(key);
-    console.error('Network sync save failed for', key, err);
-    if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
-    return false;
-  } finally {
-    pendingNetworkWrites.delete(key);
-  }
+  })();
+  pendingNetworkWritePromises.set(key, writePromise);
+  return writePromise;
 }
 
 function isSharedSyncAvailable() {
@@ -1473,8 +1534,9 @@ async function initializeApp() {
   ensureSuperAdminAccount();
   migrateAndNormalizeSubmissions();
   startOverlayBodyLockObserver();
-  applyPersistedAppUiState();
   const params = new URLSearchParams(window.location.search);
+  const startupSharedChanged = await hydrateSharedStateBeforeFirstRender(params);
+  applyPersistedAppUiState();
   if (params.has('q')) {
     const id = params.get('q');
     state.prefillQuizCode = id;
@@ -1501,9 +1563,10 @@ async function initializeApp() {
     };
     state.view = 'student.result';
   }
+  applySharedStateUiRefresh(startupSharedChanged, { suppressRender: true });
   render();
   startNetworkSyncLoop();
-  runSharedSyncCycle({ forcePull: true, forceRender: true });
+  if (!networkSyncReady || networkSyncFailed) runSharedSyncCycle({ forcePull: true, forceRender: true });
 }
 
 function save(key, value) {
@@ -2815,7 +2878,7 @@ function buildTeacherMobileNav() {
 async function resolveQuizFromAccessWithSync(access) {
   let quiz = resolveQuizFromAccess(access);
   if (quiz || !canUseNetworkSync()) return quiz;
-  await pullNetworkState(true);
+  await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
   quiz = resolveQuizFromAccess(access);
   return quiz;
 }
@@ -2974,10 +3037,9 @@ function render() {
       render();
     };
     const topTeacherBtn = document.getElementById('topTeacher');
-    if (topTeacherBtn) topTeacherBtn.onclick = () => {
+    if (topTeacherBtn) topTeacherBtn.onclick = async () => {
       if (state.view === 'student' || state.view === 'student.result') clearStudentEntryContext();
-      state.view = isTeacherLoggedIn() ? 'teacher' : 'teacher.login';
-      render();
+      await openTeacherWorkspace('teacher');
     };
     const topStudentBtn = document.getElementById('topStudent');
     if (topStudentBtn) topStudentBtn.onclick = () => { state.view = 'student'; render(); };
@@ -3021,7 +3083,7 @@ function render() {
       const pending = { ...state.pendingResultLookup };
       state.pendingResultLookup = null;
       setTimeout(async () => {
-        if (canUseNetworkSync()) await pullNetworkState(true);
+        if (canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
         const openOptions = {
           autoDownloadCorrection: pending.downloadCorrection,
           correctionSubject: pending.correctionSubject || ''
@@ -3198,7 +3260,7 @@ function renderHomePage() {
     </section>
   `;
   setTimeout(() => {
-    document.getElementById('homeGetStarted').onclick = () => { state.view = isTeacherLoggedIn() ? 'teacher' : 'teacher.login'; render(); };
+    document.getElementById('homeGetStarted').onclick = () => { openTeacherWorkspace('teacher'); };
   }, 0);
   return wrapper;
 }
@@ -3222,7 +3284,7 @@ function renderAdminAuth() {
     </div>
   `;
   setTimeout(() => {
-    document.getElementById('btnAdminLogin').onclick = () => {
+    document.getElementById('btnAdminLogin').onclick = async () => {
       const id = normalizeEmail(document.getElementById('adminLoginId').value);
       const password = document.getElementById('adminLoginPassword').value || '';
       if (id !== SUPER_ADMIN_EMAIL || password !== SUPER_ADMIN_PASSWORD) return showNotification('Invalid admin email or password', 'error');
@@ -3230,8 +3292,7 @@ function renderAdminAuth() {
       save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
       localStorage.setItem(STORAGE_KEYS.teacherId, id);
       state.teacherId = id;
-      state.view = 'admin';
-      render();
+      await openTeacherWorkspace('teacher.settings');
     };
   }, 0);
   return wrapper;
@@ -3324,43 +3385,69 @@ function renderTeacherAuth() {
   `;
 
   setTimeout(() => {
-    const login = (createMode = false) => {
-      const id = normalizeEmail(document.getElementById('teacherLoginId').value);
-      const password = document.getElementById('teacherLoginPassword').value || '';
+    const idInput = document.getElementById('teacherLoginId');
+    const passwordInput = document.getElementById('teacherLoginPassword');
+    const loginBtn = document.getElementById('btnTeacherLogin');
+    const createBtn = document.getElementById('btnTeacherCreate');
+    const setBusy = (busy, mode = 'login') => {
+      [idInput, passwordInput, loginBtn, createBtn].forEach((node) => {
+        if (!node) return;
+        node.disabled = !!busy;
+      });
+      if (loginBtn) loginBtn.textContent = busy && mode === 'login' ? 'Syncing...' : 'Login';
+      if (createBtn) createBtn.textContent = busy && mode === 'create' ? 'Creating...' : 'Create Teacher ID';
+    };
+
+    const login = async (createMode = false) => {
+      const id = normalizeEmail(idInput?.value);
+      const password = passwordInput?.value || '';
       if (!id || !password) return showNotification('Enter teacher email ID and password', 'error');
       if (id === SUPER_ADMIN_EMAIL) ensureSuperAdminAccount();
-      const teachers = getAllTeachers();
-      if (createMode) {
-        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
-        if (teachers[id]) return showNotification('Teacher ID already exists. Login instead.', 'error');
-        teachers[id] = {
-          teacherId: id,
-          email: id,
-          password,
-          role: 'teacher',
-          name: '',
-          phone: '',
-          tokenBalance: 0,
-          tokenUpdatedAt: new Date().toISOString(),
-          tokenRequestStatus: '',
-          unlimitedExpiresAt: '',
-          unlimitedDeviceId: '',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-        saveAllTeachers(teachers);
-        showNotification('Teacher ID created', 'success');
-      } else {
-        if (!teachers[id] || teachers[id].password !== password) return showNotification('Invalid teacher ID or password', 'error');
+      setBusy(true, createMode ? 'create' : 'login');
+      try {
+        if (canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+        const teachers = getAllTeachers();
+        if (createMode) {
+          if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
+          if (teachers[id]) return showNotification('Teacher ID already exists. Login instead.', 'error');
+          const now = new Date().toISOString();
+          teachers[id] = {
+            teacherId: id,
+            email: id,
+            password,
+            role: 'teacher',
+            name: '',
+            phone: '',
+            tokenBalance: 0,
+            tokenUpdatedAt: now,
+            tokenRequestStatus: '',
+            unlimitedExpiresAt: '',
+            unlimitedDeviceId: '',
+            createdAt: now,
+            updatedAt: now
+          };
+          saveAllTeachers(teachers);
+          const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers]);
+          showNotification(sharedSyncOk ? 'Teacher ID created' : `Teacher ID created locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
+        } else {
+          if (!teachers[id]) {
+            return showNotification(networkSyncFailed ? `Teacher account not found on this device yet. ${getSharedSyncWarningMessage()}` : 'Invalid teacher ID or password', 'error', 8000);
+          }
+          if (teachers[id].password !== password) return showNotification('Invalid teacher ID or password', 'error');
+        }
+        save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
+        localStorage.setItem(STORAGE_KEYS.teacherId, id);
+        state.teacherId = id;
+        await openTeacherWorkspace(id === SUPER_ADMIN_EMAIL ? 'teacher.settings' : 'teacher');
+      } catch (error) {
+        console.error(error);
+        showNotification('Unable to verify this teacher account right now. Please try again.', 'error', 8000);
+      } finally {
+        setBusy(false);
       }
-      save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
-      localStorage.setItem(STORAGE_KEYS.teacherId, id);
-      state.teacherId = id;
-      state.view = isSuperAdmin() ? 'teacher.settings' : 'teacher';
-      render();
     };
-    document.getElementById('btnTeacherLogin').onclick = () => login(false);
-    document.getElementById('btnTeacherCreate').onclick = () => login(true);
+    if (loginBtn) loginBtn.onclick = () => login(false);
+    if (createBtn) createBtn.onclick = () => login(true);
   }, 0);
   return wrapper;
 }
@@ -10328,7 +10415,7 @@ function showCorrectionRequestModal(quiz, submission, onSave) {
 async function openStudentCorrectionByShareKey(shareKey, options = {}) {
   const key = (shareKey || '').trim().toLowerCase();
   if (!key) return showNotification('Correction link is incomplete', 'error');
-  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
   const submission = findSubmissionByShareKey(key);
   if (!submission) return showNotification('That correction could not be verified on this device yet.', 'error', 7000);
   return openStudentCorrectionBySubmissionKey(
@@ -10342,7 +10429,7 @@ async function openStudentCorrectionBySubmissionKey(quizId, submissionKey, optio
   const id = (quizId || '').trim();
   const key = (submissionKey || '').trim();
   if (!id || !key) return showNotification('Correction link is incomplete', 'error');
-  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
   const quizForRegrade = getAllQuizzes()[id];
   if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
   const submission = findSubmissionBySubmissionKey(id, key);
@@ -10366,7 +10453,7 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
   const id = (quizId || '').trim();
   const key = normalizeEmail(identifier || '');
   if (!id || !key) return showNotification('Enter quiz ID and email or registration number', 'error');
-  if (canUseNetworkSync()) await pullNetworkState(true);
+  if (canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
   const quizForRegrade = getAllQuizzes()[id];
   if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
   const subs = getAllSubmissions().filter((submission) => {
@@ -10422,7 +10509,7 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
 async function showStudentResultModalByShareKey(shareKey, includeActions = true, options = {}) {
   const key = (shareKey || '').trim().toLowerCase();
   if (!key) return showNotification('Result link is incomplete', 'error');
-  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
   const submission = findSubmissionByShareKey(key);
   if (!submission) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
   return showStudentResultModalBySubmissionKey(
@@ -10437,7 +10524,7 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
   const id = (quizId || '').trim();
   const key = (submissionKey || '').trim();
   if (!id || !key) return showNotification('Result link is incomplete', 'error');
-  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
   const quizForRegrade = getAllQuizzes()[id];
   if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
   const submission = findSubmissionBySubmissionKey(id, key);
