@@ -6426,6 +6426,8 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
   const avoid = Array.isArray(exportOptions.pagebreakAvoid) && exportOptions.pagebreakAvoid.length
     ? exportOptions.pagebreakAvoid
     : ['.avoid-break', '.pdf-section-card', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card'];
+  const before = Array.isArray(exportOptions.pagebreakBefore) ? exportOptions.pagebreakBefore : [];
+  const after = Array.isArray(exportOptions.pagebreakAfter) ? exportOptions.pagebreakAfter : [];
   let source = document.getElementById(sourceId);
   if (source) source.remove();
   source = document.createElement('div');
@@ -6511,7 +6513,9 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
           },
           pagebreak: {
             mode: ['css', 'legacy'],
-            avoid
+            avoid,
+            before,
+            after
           }
         }).from(sandboxState.exportRoot).save();
       } finally {
@@ -6950,6 +6954,21 @@ function buildCorrectionQuestionEntries(submission, opts = {}) {
   };
 }
 
+function getPdfExportTextLength(value = '') {
+  return normalizeRichText(value)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|ul|ol)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .length;
+}
+
+function isPdfExportLongCard(...values) {
+  const totalLength = values.reduce((sum, value) => sum + getPdfExportTextLength(value || ''), 0);
+  return totalLength > 900;
+}
+
 function buildPdfOptionListHtml(question = {}, options = {}) {
   const selectedAnswer = (options.selectedAnswer || '').toString().trim().toUpperCase();
   const correctAnswer = (options.correctAnswer || question.answer || '').toString().trim().toUpperCase();
@@ -7010,8 +7029,9 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
     const learningPoint = question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.';
     const studentAnswerText = chosen ? `${chosen}. ${getDisplayOptionText(question, chosen)}` : 'No answer';
     const correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
+    const longCardClass = isPdfExportLongCard(question.question || '', explanation, learningPoint) ? ' long-card' : '';
     return `
-      <section class="pdf-question-card ${statusText === 'Correct' ? 'status-correct' : 'status-incorrect'} avoid-break">
+      <section class="pdf-question-card ${statusText === 'Correct' ? 'status-correct' : 'status-incorrect'} avoid-break${longCardClass}">
         <div class="pdf-question-head">
           <div class="pdf-question-number">Question ${entry.originalIndex + 1}</div>
           <div class="pdf-question-status">${statusText}</div>
@@ -7036,35 +7056,36 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   return `
     <div class="pdf-doc-root correction-pdf-root">
       <style>
-        .pdf-doc-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.48;font-size:13pt}
+        .pdf-doc-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.55;font-size:12pt}
         .pdf-doc-root *{box-sizing:border-box}
         .pdf-doc-shell{display:flex;flex-direction:column;gap:14px}
         .pdf-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px 18px 16px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%)}
-        .pdf-brand{font-size:14pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
-        .pdf-title{font-size:20pt;font-weight:900;line-height:1.2;color:#1F2937;margin-top:8px;text-transform:uppercase}
-        .pdf-subtitle{font-size:12.5pt;color:#000;margin-top:6px}
+        .pdf-brand{font-size:13pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
+        .pdf-title{font-size:18pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
+        .pdf-subtitle{font-size:12pt;color:#000;margin-top:6px;line-height:1.5}
         .pdf-section-card{border:1px solid #CBD5E1;border-radius:16px;padding:14px;background:#fff}
-        .pdf-section-heading{font-size:15pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
+        .pdf-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
         .pdf-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
         .pdf-meta-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px}
-        .pdf-meta-card strong{display:block;font-size:11.6pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
-        .pdf-meta-card span{display:block;color:#000;font-size:13pt;line-height:1.45;word-break:break-word}
+        .pdf-meta-card strong{display:block;font-size:11pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .pdf-meta-card span{display:block;color:#000;font-size:12pt;line-height:1.55;word-break:break-word}
         .pdf-question-card{border:1px solid #CBD5E1;border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
+        .pdf-question-card.long-card{page-break-inside:auto !important;break-inside:auto !important}
         .pdf-question-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
-        .pdf-question-number{font-size:14pt;font-weight:900;color:#1F2937}
-        .pdf-question-status{padding:4px 10px;border-radius:999px;background:#EFF6FF;color:#000;font-size:11.6pt;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+        .pdf-question-number{font-size:13pt;font-weight:900;color:#1F2937}
+        .pdf-question-status{padding:4px 10px;border-radius:999px;background:#EFF6FF;color:#000;font-size:11pt;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
         .pdf-question-card.status-correct .pdf-question-status{background:#DCFCE7}
         .pdf-question-card.status-incorrect .pdf-question-status{background:#FEE2E2}
-        .pdf-question-text{margin-top:10px;color:#000;font-size:13.6pt;line-height:1.48;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
-        .pdf-meta-line{margin-top:8px;color:#000;font-size:12.8pt;line-height:1.48;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .pdf-question-text{margin-top:10px;color:#000;font-size:12.4pt;line-height:1.58;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .pdf-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
         .pdf-meta-line strong{color:#000}
         .pdf-writeup{color:#000}
         .pdf-option-list{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px}
         .pdf-option-row{display:flex;gap:10px;align-items:flex-start;border:1px solid #E2E8F0;border-radius:10px;padding:8px 10px;background:#fff}
         .pdf-option-row.is-correct{border-color:#93C5FD;background:#EFF6FF}
         .pdf-option-row.is-selected{box-shadow:inset 0 0 0 1px rgba(47,128,237,.22)}
-        .pdf-option-letter{font-weight:900;color:#000;min-width:18px;font-size:12.8pt}
-        .pdf-option-text{color:#000;font-size:12.8pt;line-height:1.48;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .pdf-option-letter{font-weight:900;color:#000;min-width:18px;font-size:12pt}
+        .pdf-option-text{color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
         .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
         .rich-text-output > :first-child{margin-top:0}
         .rich-text-output > :last-child{margin-bottom:0}
@@ -7110,40 +7131,18 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     resolvedSubjectName ? `correction-${resolvedSubjectName}` : 'correction'
   );
   const successMessage = resolvedSubjectName ? `${resolvedSubjectName} correction PDF downloaded` : 'Correction PDF downloaded';
-  const routePath = buildStudentCorrectionPdfRoute(submission, { subjectName: resolvedSubjectName || opts.subjectName || '' });
-  const serverReady = canUseServerRoutePdfExport();
-  if (serverReady) {
-    return downloadPdfRouteThroughServer(
-      routePath,
-      filename,
-      successMessage,
-      { orientation: 'p', marginsMm: { top: 10, right: 8, bottom: 10, left: 8 } },
-      { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
-    ).catch((error) => {
-      console.warn('Server correction PDF export failed. Falling back to browser rendering.', error);
-      return downloadPagedPdfFromHtml(
-        buildCorrectionPdfDocumentHtml(submission, quiz, opts),
-        filename,
-        successMessage,
-        {
-          disableServerHtmlExport: true,
-          scale: 2.15,
-          contentWidthMm: 194,
-          marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-          pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
-        }
-      );
-    });
-  }
   return downloadPagedPdfFromHtml(
     buildCorrectionPdfDocumentHtml(submission, quiz, opts),
     filename,
     successMessage,
     {
-      scale: 2.15,
-      contentWidthMm: 194,
+      disableServerHtmlExport: true,
+      scale: 2.35,
+      contentWidthMm: 186,
       marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-      pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
+      renderDelayMs: 450,
+      pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card'],
+      pagebreakBefore: ['.pdf-question-card.long-card']
     }
   );
 }
@@ -7339,27 +7338,28 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
   return `
     <div class="pdf-doc-root facility-pdf-root">
       <style>
-        .facility-pdf-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.48;font-size:13pt}
+        .facility-pdf-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.55;font-size:12pt}
         .facility-pdf-root *{box-sizing:border-box}
         .facility-shell{display:flex;flex-direction:column;gap:14px}
         .facility-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%)}
-        .facility-brand{font-size:14pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
-        .facility-title{font-size:20pt;font-weight:900;line-height:1.2;color:#1F2937;margin-top:8px;text-transform:uppercase}
-        .facility-subtitle{font-size:12.5pt;color:#000;margin-top:6px}
+        .facility-brand{font-size:13pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
+        .facility-title{font-size:18pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
+        .facility-subtitle{font-size:12pt;color:#000;margin-top:6px;line-height:1.5}
         .facility-summary{border:1px solid #CBD5E1;border-radius:16px;background:#fff;padding:14px}
-        .facility-section-heading{font-size:15pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
+        .facility-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
         .facility-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
         .facility-summary-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px}
-        .facility-summary-card strong{display:block;font-size:11.6pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
-        .facility-summary-card span{display:block;color:#000;font-size:13pt;line-height:1.42}
+        .facility-summary-card strong{display:block;font-size:11pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .facility-summary-card span{display:block;color:#000;font-size:12pt;line-height:1.55}
         .facility-band-section{display:flex;flex-direction:column;gap:10px}
-        .facility-band-heading{padding:10px 14px;border-radius:14px;font-size:13pt;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#000;border:1px solid var(--band-accent);background:var(--band-fill)}
+        .facility-band-heading{padding:10px 14px;border-radius:14px;font-size:12pt;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#000;border:1px solid var(--band-accent);background:var(--band-fill)}
         .facility-question-card{border:1px solid #CBD5E1;border-left:4px solid var(--band-accent);border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
+        .facility-question-card.long-card{page-break-inside:auto !important;break-inside:auto !important}
         .facility-question-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
-        .facility-question-title{font-size:14pt;font-weight:900;color:#1F2937}
-        .facility-question-chip{padding:4px 10px;border-radius:999px;background:var(--band-fill);color:#000;font-size:11.6pt;font-weight:800}
-        .facility-question-text{margin-top:10px;color:#000;font-size:13.6pt;line-height:1.48;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
-        .facility-meta-line{margin-top:8px;color:#000;font-size:12.8pt;line-height:1.48;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .facility-question-title{font-size:13pt;font-weight:900;color:#1F2937}
+        .facility-question-chip{padding:4px 10px;border-radius:999px;background:var(--band-fill);color:#000;font-size:11pt;font-weight:800}
+        .facility-question-text{margin-top:10px;color:#000;font-size:12.4pt;line-height:1.58;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .facility-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
         .facility-meta-line strong{color:#000}
         .facility-writeup{color:#000}
         .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
@@ -7394,8 +7394,9 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
                 const percentText = item.facilityIndex == null ? 'No attempts' : `${Math.round(item.facilityIndex * 100)}%`;
                 const correctAnswerText = item.answer ? `${item.answer}. ${getDisplayOptionText(item, item.answer)}` : 'Not set';
                 const optionCounts = (item.optionCounts || []).map((option) => `${option.letter}: ${option.count}`).join(' • ');
+                const longCardClass = isPdfExportLongCard(item.question || '', item.explanation || '', item.learningPoint || item.keyConcept || '') ? ' long-card' : '';
                 return `
-                  <article class="facility-question-card avoid-break" style="--band-fill:${band.color};--band-accent:${band.accent}">
+                  <article class="facility-question-card avoid-break${longCardClass}" style="--band-fill:${band.color};--band-accent:${band.accent}">
                     <div class="facility-question-head">
                       <div class="facility-question-title">Question ${item.index} • ${percentText} • ${escapeHtml(section.label)}</div>
                       <div class="facility-question-chip">${escapeHtml(section.label)}</div>
@@ -7425,40 +7426,18 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
   const subjectName = (options.subjectName || '').toString().trim() || 'General';
   const filename = `${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`;
   const successMessage = Object.prototype.hasOwnProperty.call(options, 'successMessage') ? options.successMessage : 'Facility index PDF downloaded';
-  const routePath = buildFacilityIndexPdfRoute(quiz, { subjectName });
-  const serverReady = canUseServerRoutePdfExport();
-  if (serverReady) {
-    return downloadPdfRouteThroughServer(
-      routePath,
-      filename,
-      successMessage,
-      { orientation: 'p', marginsMm: { top: 10, right: 8, bottom: 10, left: 8 } },
-      { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
-    ).catch((error) => {
-      console.warn('Server facility PDF export failed. Falling back to browser rendering.', error);
-      return downloadPagedPdfFromHtml(
-        buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
-        filename,
-        successMessage,
-        {
-          disableServerHtmlExport: true,
-          scale: 2.1,
-          contentWidthMm: 194,
-          marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-          pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
-        }
-      );
-    });
-  }
   return downloadPagedPdfFromHtml(
     buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
     filename,
     successMessage,
     {
-      scale: 2.1,
-      contentWidthMm: 194,
+      disableServerHtmlExport: true,
+      scale: 2.3,
+      contentWidthMm: 186,
       marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-      pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
+      renderDelayMs: 450,
+      pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading', '.facility-band-section'],
+      pagebreakBefore: ['.facility-question-card.long-card']
     }
   );
 }
