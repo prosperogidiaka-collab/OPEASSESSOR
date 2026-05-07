@@ -11,6 +11,7 @@ const puppeteer = require('puppeteer-core');
 const qrcodeGenerator = require('qrcode-generator');
 
 const { VALID_STATE_KEYS, createStateStore } = require('./state-store');
+const { buildDedicatedPdfRouteDocument, isDedicatedPdfRouteType } = require('./pdf-templates');
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 8000);
@@ -297,6 +298,81 @@ function buildPdfRouteDocument(payload = {}, options = {}) {
 </html>`, 'utf8');
 }
 
+async function buildDedicatedPdfRouteResponse(req) {
+  const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const parsedRoute = parsePdfRoutePath(requestUrl.pathname);
+  if (!parsedRoute || !isDedicatedPdfRouteType(parsedRoute.type)) return null;
+
+  const quizzes = await stateStore.getStateValue('quizzes');
+  const submissions = await stateStore.getStateValue('submissions');
+  const verificationBaseUrl = getVerificationBaseUrl(req);
+
+  if (parsedRoute.type === 'result-summary') {
+    const target = (submissions || []).find((item) => ((item.shareKey || '').toString().trim().toLowerCase()) === parsedRoute.recordId.toLowerCase());
+    if (!target) {
+      const error = new Error('Result summary not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    const quiz = quizzes && quizzes[target.quizId];
+    if (!quiz) {
+      const error = new Error('Quiz record not found for this result');
+      error.statusCode = 404;
+      throw error;
+    }
+    const shareUrl = `${verificationBaseUrl}?r=${encodeURIComponent(target.shareKey || parsedRoute.recordId)}`;
+    return Buffer.from(buildDedicatedPdfRouteDocument({
+      type: 'result-summary',
+      title: 'Student Result Summary PDF',
+      quiz,
+      submission: target,
+      rankValue: computeSubmissionRank(submissions, target),
+      verificationQrSvg: buildVerificationQrSvg(shareUrl)
+    }), 'utf8');
+  }
+
+  if (parsedRoute.type === 'student-correction') {
+    const target = (submissions || []).find((item) => ((item.shareKey || '').toString().trim().toLowerCase()) === parsedRoute.recordId.toLowerCase());
+    if (!target) {
+      const error = new Error('Student correction record not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    const quiz = quizzes && quizzes[target.quizId];
+    if (!quiz) {
+      const error = new Error('Quiz record not found for this correction');
+      error.statusCode = 404;
+      throw error;
+    }
+    return Buffer.from(buildDedicatedPdfRouteDocument({
+      type: 'student-correction',
+      title: 'Student Correction PDF',
+      quiz,
+      submission: target,
+      subjectName: (requestUrl.searchParams.get('subject') || '').trim(),
+      showNegativePenalty: true
+    }), 'utf8');
+  }
+
+  if (parsedRoute.type === 'facility-index') {
+    const quiz = quizzes && quizzes[parsedRoute.recordId];
+    if (!quiz) {
+      const error = new Error('Quiz record not found for facility index export');
+      error.statusCode = 404;
+      throw error;
+    }
+    return Buffer.from(buildDedicatedPdfRouteDocument({
+      type: 'facility-index',
+      title: 'Facility Index PDF',
+      quiz,
+      submissions: (submissions || []).filter((item) => item && item.quizId === quiz.id),
+      subjectName: (requestUrl.searchParams.get('subject') || '').trim()
+    }), 'utf8');
+  }
+
+  return null;
+}
+
 function computeSubmissionRank(submissions = [], targetSubmission = {}) {
   const submissionId = (targetSubmission.submissionId || '').toString().trim();
   const ordered = (submissions || [])
@@ -550,12 +626,12 @@ function renderPdfWithBrowserFallback({ html = '', routePath = '', bootstrap = n
   const pdfPath = path.join(jobDir, 'export.pdf');
   let sourceTarget = '';
 
-  if (bootstrap && typeof bootstrap === 'object') {
+  if (routePath) {
+    sourceTarget = buildInternalPdfUrl(routePath);
+  } else if (bootstrap && typeof bootstrap === 'object') {
     const sourcePath = path.join(jobDir, 'source.html');
     fs.writeFileSync(sourcePath, buildPdfRouteDocument(bootstrap, { baseUrl }), 'utf8');
     sourceTarget = pathToFileURL(sourcePath).toString();
-  } else if (routePath) {
-    sourceTarget = buildInternalPdfUrl(routePath);
   } else {
     const sourcePath = path.join(jobDir, 'source.html');
     fs.writeFileSync(sourcePath, buildPdfDocumentHtml(html, options), 'utf8');
@@ -610,7 +686,8 @@ async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', bootstr
   fs.mkdirSync(PDF_EXPORT_TEMP_DIR, { recursive: true });
   const jobId = randomUUID();
   const jobDir = path.join(PDF_EXPORT_TEMP_DIR, jobId);
-  const debugScreenshotPath = path.join(jobDir, 'debug-pdf-page.png');
+  const debugScreenshotPath = path.join(jobDir, 'debug-pdf-output.png');
+  const projectDebugScreenshotPath = path.join(ROOT, 'debug-pdf-output.png');
   fs.mkdirSync(jobDir, { recursive: true });
   let browser = null;
   let page = null;
@@ -619,38 +696,36 @@ async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', bootstr
     browser = await getSharedPdfBrowser(browserPath);
     page = await browser.newPage();
     await page.setViewport({ width: 1600, height: 2200, deviceScaleFactor: 1 });
-    page.setDefaultNavigationTimeout(30000);
-    page.setDefaultTimeout(30000);
-    const usesPdfAppRenderer = !!(bootstrap && typeof bootstrap === 'object') || !!routePath;
+    page.setDefaultNavigationTimeout(60000);
+    page.setDefaultTimeout(60000);
+    const usesPdfRoute = !!routePath;
+    const usesPdfAppRenderer = !usesPdfRoute && !!(bootstrap && typeof bootstrap === 'object');
 
-    if (bootstrap && typeof bootstrap === 'object') {
-      await page.setContent(buildPdfRouteDocument(bootstrap, { baseUrl }).toString('utf8'), {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      });
-    } else if (routePath) {
+    if (routePath) {
       const pdfUrl = buildInternalPdfUrl(routePath);
       const response = await page.goto(pdfUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
+        waitUntil: ['domcontentloaded', 'networkidle0'],
+        timeout: 60000
       });
       if (!response || !response.ok()) {
         throw new Error(`PDF route failed to load: ${pdfUrl}`);
       }
+    } else if (bootstrap && typeof bootstrap === 'object') {
+      await page.setContent(buildPdfRouteDocument(bootstrap, { baseUrl }).toString('utf8'), {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      });
     } else {
       await page.setContent(buildPdfDocumentHtml(html, options), {
         waitUntil: 'domcontentloaded',
-        timeout: 30000
+        timeout: 60000
       });
     }
 
     await page.emulateMediaType('screen');
-    await page.evaluate(async () => {
-      if (document.fonts && document.fonts.ready) {
-        await document.fonts.ready;
-      }
-    });
+    await page.evaluateHandle('document.fonts ? document.fonts.ready : Promise.resolve()');
     await page.waitForSelector('#pdf-root', {
+      visible: true,
       timeout: usesPdfAppRenderer ? 30000 : 5000
     });
     if (usesPdfAppRenderer) {
@@ -660,9 +735,9 @@ async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', bootstr
     }
     await page.waitForFunction(() => {
       const root = document.querySelector('#pdf-root');
-      return root && root.offsetHeight > 0 && root.textContent.trim().length > 0;
+      return root && root.innerText.trim().length > 100;
     }, {
-      timeout: usesPdfAppRenderer ? 15000 : 5000
+      timeout: usesPdfRoute || usesPdfAppRenderer ? 15000 : 5000
     });
     await page.waitForFunction(() => {
       const images = Array.from(document.images || []);
@@ -670,19 +745,24 @@ async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', bootstr
     }, {
       timeout: 10000
     }).catch(() => {});
-    if (PDF_DEBUG_CAPTURE) {
-      await page.screenshot({
-        path: debugScreenshotPath,
-        fullPage: true
-      });
-      try {
-        fs.copyFileSync(debugScreenshotPath, path.join(ROOT, 'debug-pdf-page.png'));
-      } catch (error) {}
-    }
+    await page.screenshot({
+      path: debugScreenshotPath,
+      fullPage: true
+    });
+    try {
+      fs.copyFileSync(debugScreenshotPath, projectDebugScreenshotPath);
+    } catch (error) {}
 
-    const textContent = await page.$eval('#pdf-root', (element) => element.innerText.trim());
-    if (!textContent || textContent.length < 1) {
-      throw new Error('PDF export failed: PDF root has no visible content.');
+    const rootState = await page.$eval('#pdf-root', (element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        text: element.innerText.trim(),
+        width: rect.width,
+        height: rect.height
+      };
+    });
+    if (!rootState.text || rootState.text.length < 100 || rootState.width < 100 || rootState.height < 100) {
+      throw new Error('PDF root is empty. Do not export blank PDF.');
     }
 
     return await page.pdf({
@@ -833,6 +913,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    const dedicatedPdfDocument = await buildDedicatedPdfRouteResponse(req);
+    if (dedicatedPdfDocument) {
+      return send(req, res, 200, req.method === 'HEAD' ? '' : dedicatedPdfDocument, TYPES['.html']);
+    }
+
     const pdfBootstrap = await buildPdfBootstrapPayload(req);
     if (pdfBootstrap) {
       const documentBuffer = buildPdfRouteDocument(pdfBootstrap, { baseUrl: getRequestBaseUrl(req) });
