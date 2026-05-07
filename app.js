@@ -1076,11 +1076,7 @@ function getQuestionSubjectLabel(question = {}) {
 
 function buildCorrectionShareLinksText(quiz, submission) {
   const resultUrl = buildCertificateVerificationUrl(quiz, submission);
-  const correctionUrl = buildServerPdfDownloadUrl(
-    buildStudentCorrectionPdfRoute(submission),
-    getStudentResultPdfFilename(submission, quiz?.id || submission?.quizId, 'correction'),
-    { inline: true }
-  );
+  const correctionUrl = buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true });
   return [
     'Result Summary',
     resultUrl,

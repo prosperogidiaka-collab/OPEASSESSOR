@@ -118,6 +118,11 @@ function escapeHtmlAttr(value = '') {
     .replace(/>/g, '&gt;');
 }
 
+function injectOrReplaceMetaTag(html = '', matcher, tagMarkup) {
+  if (matcher.test(html)) return html.replace(matcher, tagMarkup);
+  return html.replace('</head>', `    ${tagMarkup}\n</head>`);
+}
+
 function getRequestBaseUrl(req) {
   if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
   const forwardedProto = (req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
@@ -130,32 +135,44 @@ function getRequestBaseUrl(req) {
 function buildShareMeta(req) {
   const currentUrl = new URL(req.url || '/', getRequestBaseUrl(req));
   const hasQuizLink = currentUrl.searchParams.has('q');
-  const title = hasQuizLink ? 'Join Quiz on OPE Assessor' : 'OPE Assessor';
-  const description = hasQuizLink
-    ? 'Open this secure OPE Assessor quiz link to start the assessment.'
-    : 'Zero-Friction Assessment Portal with secure quiz sharing, student results, and teacher dashboards.';
+  const hasResultLink = currentUrl.searchParams.has('r');
+  const wantsCorrection = ['1', 'true', 'yes'].includes((currentUrl.searchParams.get('c') || currentUrl.searchParams.get('downloadCorrection') || '').toLowerCase());
+  let title = 'OPE Assessor';
+  let description = 'Teacher dashboards, secure quiz links, verified student results, and correction-ready assessment sharing.';
+  if (hasQuizLink) {
+    title = 'Join Quiz on OPE Assessor';
+    description = 'Open this secure OPE Assessor quiz link to start the assessment from any device.';
+  } else if (hasResultLink && wantsCorrection) {
+    title = 'Student Correction on OPE Assessor';
+    description = 'Open this secure OPE Assessor link to review the student correction sheet and answer-by-answer feedback.';
+  } else if (hasResultLink) {
+    title = 'Verified Student Result on OPE Assessor';
+    description = 'Open this secure OPE Assessor result link to view the verified score summary and certificate details.';
+  }
   const imageUrl = new URL('/summary-preview.png', getRequestBaseUrl(req)).toString();
   return {
     title,
     description,
     url: currentUrl.toString(),
-    imageUrl
+    imageUrl,
+    imageAlt: 'OPE Assessor dashboard preview with logo, analytics cards, quiz overview, and result verification highlights.'
   };
 }
 
 function decorateHtmlForSharing(req, htmlBuffer) {
   const shareMeta = buildShareMeta(req);
   let html = Buffer.isBuffer(htmlBuffer) ? htmlBuffer.toString('utf8') : String(htmlBuffer || '');
-  html = html
-    .replace(/<meta property="og:title" content="[^"]*">/i, `<meta property="og:title" content="${escapeHtmlAttr(shareMeta.title)}">`)
-    .replace(/<meta property="og:description" content="[^"]*">/i, `<meta property="og:description" content="${escapeHtmlAttr(shareMeta.description)}">`)
-    .replace(/<meta property="og:image" content="[^"]*">/i, `<meta property="og:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`)
-    .replace(/<meta name="twitter:title" content="[^"]*">/i, `<meta name="twitter:title" content="${escapeHtmlAttr(shareMeta.title)}">`)
-    .replace(/<meta name="twitter:description" content="[^"]*">/i, `<meta name="twitter:description" content="${escapeHtmlAttr(shareMeta.description)}">`)
-    .replace(/<meta name="twitter:image" content="[^"]*">/i, `<meta name="twitter:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`);
-  if (!/<meta property="og:url"/i.test(html)) {
-    html = html.replace('</head>', `    <meta property="og:url" content="${escapeHtmlAttr(shareMeta.url)}">\n    <link rel="canonical" href="${escapeHtmlAttr(shareMeta.url)}">\n</head>`);
-  }
+  html = html.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtmlAttr(shareMeta.title)}</title>`);
+  html = injectOrReplaceMetaTag(html, /<meta name="description" content="[^"]*">/i, `<meta name="description" content="${escapeHtmlAttr(shareMeta.description)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:title" content="[^"]*">/i, `<meta property="og:title" content="${escapeHtmlAttr(shareMeta.title)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:description" content="[^"]*">/i, `<meta property="og:description" content="${escapeHtmlAttr(shareMeta.description)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:image" content="[^"]*">/i, `<meta property="og:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:image:alt" content="[^"]*">/i, `<meta property="og:image:alt" content="${escapeHtmlAttr(shareMeta.imageAlt)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:url" content="[^"]*">/i, `<meta property="og:url" content="${escapeHtmlAttr(shareMeta.url)}">`);
+  html = injectOrReplaceMetaTag(html, /<link rel="canonical" href="[^"]*">/i, `<link rel="canonical" href="${escapeHtmlAttr(shareMeta.url)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta name="twitter:title" content="[^"]*">/i, `<meta name="twitter:title" content="${escapeHtmlAttr(shareMeta.title)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta name="twitter:description" content="[^"]*">/i, `<meta name="twitter:description" content="${escapeHtmlAttr(shareMeta.description)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta name="twitter:image" content="[^"]*">/i, `<meta name="twitter:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`);
   return Buffer.from(html, 'utf8');
 }
 
