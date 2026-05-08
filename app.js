@@ -6783,7 +6783,27 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
             windowWidth: exportWidth,
             windowHeight: exportHeight,
             scrollX: 0,
-            scrollY: 0
+            scrollY: 0,
+            // The live wrapper is hidden via clip-path so the user sees nothing
+            // during render. html2canvas works on a clone of the document, so
+            // we strip the clip + fixed positioning on the clone — otherwise
+            // the captured canvas inherits the clip and pages render blank.
+            onclone: (clonedDoc) => {
+              clonedDoc.querySelectorAll('.pdf-export-sandbox, [id$="-pdf-content-source"]').forEach((node) => {
+                // Use setProperty with `important` so we override the !important
+                // rules in buildPdfExportSandboxCss.
+                node.style.setProperty('clip-path', 'none', 'important');
+                node.style.setProperty('-webkit-clip-path', 'none', 'important');
+                node.style.setProperty('position', 'static', 'important');
+                node.style.setProperty('left', '0', 'important');
+                node.style.setProperty('top', '0', 'important');
+                node.style.setProperty('opacity', '1', 'important');
+                node.style.setProperty('visibility', 'visible', 'important');
+                node.style.setProperty('z-index', 'auto', 'important');
+                node.style.setProperty('transform', 'none', 'important');
+                node.style.setProperty('overflow', 'visible', 'important');
+              });
+            }
           },
           jsPDF: {
             unit: 'mm',
@@ -6891,7 +6911,21 @@ async function renderElementToCanvas({
       windowWidth: exportWidth,
       windowHeight: exportHeight,
       scrollX: 0,
-      scrollY: 0
+      scrollY: 0,
+      // Strip clip/position on the cloned doc so the captured canvas isn't
+      // blank. Live wrapper stays hidden from the user via clip-path.
+      onclone: (clonedDoc) => {
+        clonedDoc.querySelectorAll('.pdf-export-sandbox, [id$="-pdf-content-source"]').forEach((node) => {
+          node.style.clipPath = 'none';
+          node.style.webkitClipPath = 'none';
+          node.style.position = 'static';
+          node.style.left = '0';
+          node.style.top = '0';
+          node.style.opacity = '1';
+          node.style.visibility = 'visible';
+          node.style.zIndex = 'auto';
+        });
+      }
     });
     sandboxState.cleanup();
     return canvas;
