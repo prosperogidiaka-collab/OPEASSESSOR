@@ -6703,26 +6703,16 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
   source = document.createElement('div');
   source.id = sourceId;
   source.innerHTML = html;
-  // Park the element on-screen with a zero-size overflow:hidden wrapper.
-  // Mobile Chrome/Safari skip layout for nodes at left:-99999px, which makes
-  // html2canvas capture a blank canvas. Using opacity:0 doesn't help because
-  // html2canvas honors opacity. A 0x0 wrapper with overflow:hidden hides the
-  // content visually while letting the inner box keep its real dimensions for
-  // capture (html2canvas measures bounding boxes from the target element).
   Object.assign(source.style, {
-    position: 'fixed',
-    left: '0',
+    position: 'absolute',
+    left: '-99999px',
     top: '0',
     width: `${contentWidthMm}mm`,
     minWidth: `${contentWidthMm}mm`,
     maxWidth: `${contentWidthMm}mm`,
-    height: 'auto',
     background: '#ffffff',
     overflow: 'visible',
-    display: 'block',
-    pointerEvents: 'none',
-    zIndex: '-1',
-    clipPath: 'inset(50%)'
+    display: 'block'
   });
   document.body.appendChild(source);
   if (exportOptions.preferCanvasSnapshot) {
@@ -6783,27 +6773,7 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
             windowWidth: exportWidth,
             windowHeight: exportHeight,
             scrollX: 0,
-            scrollY: 0,
-            // The live wrapper is hidden via clip-path so the user sees nothing
-            // during render. html2canvas works on a clone of the document, so
-            // we strip the clip + fixed positioning on the clone — otherwise
-            // the captured canvas inherits the clip and pages render blank.
-            onclone: (clonedDoc) => {
-              clonedDoc.querySelectorAll('.pdf-export-sandbox, [id$="-pdf-content-source"]').forEach((node) => {
-                // Use setProperty with `important` so we override the !important
-                // rules in buildPdfExportSandboxCss.
-                node.style.setProperty('clip-path', 'none', 'important');
-                node.style.setProperty('-webkit-clip-path', 'none', 'important');
-                node.style.setProperty('position', 'static', 'important');
-                node.style.setProperty('left', '0', 'important');
-                node.style.setProperty('top', '0', 'important');
-                node.style.setProperty('opacity', '1', 'important');
-                node.style.setProperty('visibility', 'visible', 'important');
-                node.style.setProperty('z-index', 'auto', 'important');
-                node.style.setProperty('transform', 'none', 'important');
-                node.style.setProperty('overflow', 'visible', 'important');
-              });
-            }
+            scrollY: 0
           },
           jsPDF: {
             unit: 'mm',
@@ -6911,21 +6881,7 @@ async function renderElementToCanvas({
       windowWidth: exportWidth,
       windowHeight: exportHeight,
       scrollX: 0,
-      scrollY: 0,
-      // Strip clip/position on the cloned doc so the captured canvas isn't
-      // blank. Live wrapper stays hidden from the user via clip-path.
-      onclone: (clonedDoc) => {
-        clonedDoc.querySelectorAll('.pdf-export-sandbox, [id$="-pdf-content-source"]').forEach((node) => {
-          node.style.clipPath = 'none';
-          node.style.webkitClipPath = 'none';
-          node.style.position = 'static';
-          node.style.left = '0';
-          node.style.top = '0';
-          node.style.opacity = '1';
-          node.style.visibility = 'visible';
-          node.style.zIndex = 'auto';
-        });
-      }
+      scrollY: 0
     });
     sandboxState.cleanup();
     return canvas;
@@ -10908,8 +10864,8 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
 function buildPdfExportSandboxCss(widthCss = '210mm', paddingCss = '24px') {
   return `
     .pdf-export-sandbox {
-      position: fixed !important;
-      left: 0 !important;
+      position: absolute !important;
+      left: -99999px !important;
       top: 0 !important;
       width: ${widthCss} !important;
       min-width: ${widthCss} !important;
@@ -10919,7 +10875,6 @@ function buildPdfExportSandboxCss(widthCss = '210mm', paddingCss = '24px') {
       opacity: 1 !important;
       pointer-events: none !important;
       z-index: -1 !important;
-      clip-path: inset(50%) !important;
     }
     .pdf-export-root,
     .pdf-export-root * {
@@ -11059,14 +11014,9 @@ function createPdfExportSandbox({
 } = {}) {
   const sandbox = document.createElement('div');
   sandbox.className = 'pdf-export-sandbox';
-  // Park on-screen so layout/paint actually happen (mobile Chrome/Safari
-  // optimize away nodes at left:-99999px → blank canvas), then hide visually
-  // via clip-path. The inner .pdf-export-root resets clip-path to `none`
-  // (see buildPdfExportSandboxCss), so html2canvas captures the full content
-  // even though the user sees nothing.
   Object.assign(sandbox.style, {
-    position: 'fixed',
-    left: '0',
+    position: 'absolute',
+    left: '-99999px',
     top: '0',
     width: widthCss,
     minWidth: widthCss,
@@ -11075,8 +11025,7 @@ function createPdfExportSandbox({
     visibility: 'visible',
     opacity: '1',
     pointerEvents: 'none',
-    zIndex: '-1',
-    clipPath: 'inset(50%)'
+    zIndex: '-1'
   });
 
   const exportRoot = document.createElement('div');
