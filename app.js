@@ -997,11 +997,27 @@ function enhancePasswordFields(root = document) {
 function isMeaningfulQuestion(question) {
   if (!question || typeof question !== 'object') return false;
   const text = getRichTextPlainText(question.question || '').trim();
-  const options = Array.isArray(question.options)
-    ? question.options.filter((opt) => getRichTextPlainText(opt || '').trim())
-    : [];
-  const answer = (question.answer || '').toString().trim();
-  return !!text && options.length >= 2 && !!answer;
+  if (!text) return false;
+  const type = (question.type || 'mcq').toString().toLowerCase();
+  if (type === 'mcq') {
+    const options = Array.isArray(question.options)
+      ? question.options.filter((opt) => getRichTextPlainText(opt || '').trim())
+      : [];
+    const answer = (question.answer || '').toString().trim();
+    return options.length >= 2 && !!answer;
+  }
+  if (type === 'yesno') {
+    return /^(yes|no)$/i.test((question.answer || '').toString().trim());
+  }
+  if (type === 'short') {
+    const accepted = Array.isArray(question.acceptedAnswers) ? question.acceptedAnswers : [];
+    return accepted.some((a) => (a || '').toString().trim());
+  }
+  if (type === 'essay') {
+    // Essay needs only the question text — no answer required at authoring time.
+    return true;
+  }
+  return false;
 }
 
 function isEmptySharedValue(value) {
@@ -3054,20 +3070,62 @@ function readImageFileAsDataUrl(file, options = {}) {
   });
 }
 
+// Supported question types. Default 'mcq' preserves backward compatibility
+// for every quiz that already exists — no migration needed.
+const QUESTION_TYPES = ['mcq', 'yesno', 'short', 'essay'];
+
+function normalizeQuestionType(value) {
+  const v = (value || 'mcq').toString().trim().toLowerCase();
+  return QUESTION_TYPES.includes(v) ? v : 'mcq';
+}
+
+function normalizeAcceptedAnswers(value) {
+  // Accept array, comma-separated string, or newline-separated string.
+  let list = [];
+  if (Array.isArray(value)) list = value;
+  else if (typeof value === 'string') list = value.split(/\r?\n|,/);
+  return list
+    .map((entry) => (entry == null ? '' : entry.toString().trim()))
+    .filter(Boolean);
+}
+
 function normalizeQuestionForStorage(question, index = 0, subjectName = 'General') {
+  const type = normalizeQuestionType(question && question.type);
+  const baseAnswer = (question && question.answer != null ? question.answer : '').toString().trim();
   const normalized = {
     ...question,
+    type,
     question: normalizeRichText(question.question || ''),
     subject: question.subject || subjectName,
     topic: normalizeRichText(question.topic || ''),
-    options: Array.isArray(question.options) ? question.options.map((option) => normalizeRichText(option)) : [],
-    answer: (question.answer || '').toString().trim().toUpperCase(),
     difficulty: question.difficulty || 'Medium',
     explanation: normalizeRichText(question.explanation || ''),
     learningPoint: normalizeRichText(question.learningPoint || ''),
     keyConcept: normalizeRichText(question.keyConcept || question.topic || ''),
     mediaAssets: sanitizeQuestionMediaAssets(question.mediaAssets || [])
   };
+  if (type === 'mcq') {
+    normalized.options = Array.isArray(question.options) ? question.options.map((option) => normalizeRichText(option)) : [];
+    normalized.answer = baseAnswer.toUpperCase();
+    delete normalized.acceptedAnswers;
+  } else if (type === 'yesno') {
+    // Store the canonical correct answer as 'Yes' or 'No'. Options are not used
+    // — student renders two fixed radio buttons.
+    const yesNoAnswer = /^(y(es)?|true|1)$/i.test(baseAnswer) ? 'Yes' : (/^(n(o)?|false|0)$/i.test(baseAnswer) ? 'No' : 'Yes');
+    normalized.options = [];
+    normalized.answer = yesNoAnswer;
+    delete normalized.acceptedAnswers;
+  } else if (type === 'short') {
+    normalized.options = [];
+    normalized.acceptedAnswers = normalizeAcceptedAnswers(question.acceptedAnswers || question.answer || '');
+    // For convenience, keep `answer` as the first accepted spelling so legacy
+    // displays still have something to show.
+    normalized.answer = normalized.acceptedAnswers[0] || '';
+  } else if (type === 'essay') {
+    normalized.options = [];
+    normalized.answer = '';
+    delete normalized.acceptedAnswers;
+  }
   normalized._sourceId = question._sourceId || question.id || makeQuestionId(normalized, index);
   return normalized;
 }
@@ -4441,23 +4499,33 @@ function showQuizSetDetails(quizId) {
     const subject = (draftQuiz.subjects || [])[subjectIndex];
     if (!subject) return;
     const questions = Array.from(inner.querySelectorAll('.quiz-editor-question-card')).map((card, questionIndex) => {
-      const optionValues = Array.from(card.querySelectorAll('.quiz-editor-option'))
-        .map((field) => getEditorFieldStorageValue(field))
-        .filter((value) => getRichTextPlainText(value).trim());
-      const rawAnswer = (card.querySelector('.quiz-editor-answer').value || 'A').toUpperCase();
-      const rawIndex = rawAnswer.charCodeAt(0) - 65;
-      const answerIndex = optionValues.length ? Math.max(0, Math.min(optionValues.length - 1, rawIndex)) : 0;
-      return normalizeQuestionForStorage({
+      const cardType = normalizeQuestionType(card.dataset.questionType || (card.querySelector('.quiz-editor-type') && card.querySelector('.quiz-editor-type').value) || 'mcq');
+      const baseFields = {
         _sourceId: card.dataset.sourceId || '',
+        type: cardType,
         question: getEditorFieldStorageValue(card.querySelector('.quiz-editor-question')),
-        options: optionValues,
-        answer: String.fromCharCode(65 + answerIndex),
-        topic: normalizeRichText(card.querySelector('.quiz-editor-topic').value || ''),
-        difficulty: card.querySelector('.quiz-editor-difficulty').value || 'Medium',
+        topic: normalizeRichText((card.querySelector('.quiz-editor-topic') || {}).value || ''),
+        difficulty: (card.querySelector('.quiz-editor-difficulty') || {}).value || 'Medium',
         explanation: getEditorFieldStorageValue(card.querySelector('.quiz-editor-explanation')),
         learningPoint: getEditorFieldStorageValue(card.querySelector('.quiz-editor-learning-point')),
         keyConcept: getEditorFieldStorageValue(card.querySelector('.quiz-editor-key-concept'))
-      }, questionIndex, subject.name || 'General');
+      };
+      if (cardType === 'mcq') {
+        const optionValues = Array.from(card.querySelectorAll('.quiz-editor-option'))
+          .map((field) => getEditorFieldStorageValue(field))
+          .filter((value) => getRichTextPlainText(value).trim());
+        const rawAnswer = ((card.querySelector('.quiz-editor-answer') || {}).value || 'A').toUpperCase();
+        const rawIndex = rawAnswer.charCodeAt(0) - 65;
+        const answerIndex = optionValues.length ? Math.max(0, Math.min(optionValues.length - 1, rawIndex)) : 0;
+        baseFields.options = optionValues;
+        baseFields.answer = String.fromCharCode(65 + answerIndex);
+      } else if (cardType === 'yesno') {
+        baseFields.answer = ((card.querySelector('.quiz-editor-yesno-answer') || {}).value || 'Yes');
+      } else if (cardType === 'short') {
+        const raw = (card.querySelector('.quiz-editor-accepted') || {}).value || '';
+        baseFields.acceptedAnswers = normalizeAcceptedAnswers(raw);
+      }
+      return normalizeQuestionForStorage(baseFields, questionIndex, subject.name || 'General');
     }).filter(isMeaningfulQuestion);
     subject.questions = questions.slice();
     subject.bankQuestions = questions.slice();
@@ -4474,21 +4542,49 @@ function showQuizSetDetails(quizId) {
     subject.questions = questions.slice();
     subject.bankQuestions = questions.slice();
     const questionCards = questions.map((question, questionIndex) => {
+      const qType = normalizeQuestionType(question.type);
       const optionCount = Math.max(4, (question.options || []).length || 0);
       const optionFields = Array.from({ length: optionCount }, (_, optionIndex) => {
         const letter = String.fromCharCode(65 + optionIndex);
         return buildRichEditorFieldMarkup(`Option ${letter}`, 'quiz-editor-option', (question.options || [])[optionIndex] || '', { minHeight: '74px' });
       }).join('');
+      // MCQ-only fields are rendered into one block we hide/show based on the
+      // type dropdown. Yes/No, Short, Essay each have their own block. Initial
+      // CSS hides the blocks that don't match the current type.
+      const mcqHidden = qType !== 'mcq' ? ' style="display:none"' : '';
+      const yesnoHidden = qType !== 'yesno' ? ' style="display:none"' : '';
+      const shortHidden = qType !== 'short' ? ' style="display:none"' : '';
+      // Essay needs no extra fields beyond the question text + topic etc.
+      const acceptedAnswersText = Array.isArray(question.acceptedAnswers)
+        ? question.acceptedAnswers.join('\n')
+        : '';
       return `
-        <div class="card quiz-editor-question-card" data-source-id="${escapeHtml(question._sourceId || '')}">
+        <div class="card quiz-editor-question-card" data-source-id="${escapeHtml(question._sourceId || '')}" data-question-type="${escapeHtml(qType)}">
           <div class="page-heading" style="margin-bottom:12px">
             <div class="h3 quiz-editor-question-title">Question ${questionIndex + 1}</div>
             ${canEditThisQuiz ? '<button type="button" class="btn btn-ghost btn-sm btnRemoveEditorQuestion">Remove</button>' : ''}
           </div>
-          ${buildRichEditorFieldMarkup('Question text', 'quiz-editor-question', question.question || '', { minHeight: '132px' })}
-          <div class="quiz-editor-options-grid">${optionFields}</div>
-          <div class="field-grid-2" style="margin-top:12px">
+          <div class="field-grid-2" style="margin-bottom:12px">
             <div class="subject-field">
+              <label class="small">Question type</label>
+              <select class="input-beautiful quiz-editor-type">
+                <option value="mcq" ${qType === 'mcq' ? 'selected' : ''}>Multiple Choice (MCQ)</option>
+                <option value="yesno" ${qType === 'yesno' ? 'selected' : ''}>Yes / No (True/False)</option>
+                <option value="short" ${qType === 'short' ? 'selected' : ''}>Short Answer</option>
+                <option value="essay" ${qType === 'essay' ? 'selected' : ''}>Long Answer (Essay)</option>
+              </select>
+            </div>
+            <div class="subject-field">
+              <label class="small">Difficulty</label>
+              <select class="input-beautiful quiz-editor-difficulty">
+                ${['Easy', 'Medium', 'Hard'].map((level) => `<option value="${level}" ${level === (question.difficulty || 'Medium') ? 'selected' : ''}>${level}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          ${buildRichEditorFieldMarkup('Question text', 'quiz-editor-question', question.question || '', { minHeight: '132px' })}
+          <div class="quiz-editor-type-block quiz-editor-type-block-mcq"${mcqHidden}>
+            <div class="quiz-editor-options-grid">${optionFields}</div>
+            <div class="subject-field" style="margin-top:12px">
               <label class="small">Correct answer</label>
               <select class="input-beautiful quiz-editor-answer">
                 ${Array.from({ length: optionCount }, (_, optionIndex) => {
@@ -4497,11 +4593,22 @@ function showQuizSetDetails(quizId) {
                 }).join('')}
               </select>
             </div>
-            <div class="subject-field">
-              <label class="small">Difficulty</label>
-              <select class="input-beautiful quiz-editor-difficulty">
-                ${['Easy', 'Medium', 'Hard'].map((level) => `<option value="${level}" ${level === (question.difficulty || 'Medium') ? 'selected' : ''}>${level}</option>`).join('')}
+          </div>
+          <div class="quiz-editor-type-block quiz-editor-type-block-yesno"${yesnoHidden}>
+            <div class="subject-field" style="margin-top:12px">
+              <label class="small">Correct answer</label>
+              <select class="input-beautiful quiz-editor-yesno-answer">
+                <option value="Yes" ${(question.answer || 'Yes') === 'Yes' ? 'selected' : ''}>Yes</option>
+                <option value="No" ${question.answer === 'No' ? 'selected' : ''}>No</option>
               </select>
+              <div class="small" style="margin-top:6px;line-height:1.55">Students will see two radio buttons (Yes / No). Auto-marked: full marks for an exact match, zero otherwise.</div>
+            </div>
+          </div>
+          <div class="quiz-editor-type-block quiz-editor-type-block-short"${shortHidden}>
+            <div class="subject-field" style="margin-top:12px">
+              <label class="small">Accepted answers</label>
+              <textarea class="input-beautiful quiz-editor-accepted" rows="3" placeholder="One accepted answer per line, or comma-separated. Example:&#10;Paris&#10;paris">${escapeHtml(acceptedAnswersText)}</textarea>
+              <div class="small" style="margin-top:6px;line-height:1.55">List every spelling/variant you'll accept (one per line). Marking is case-insensitive and trims spaces. The student gets full marks if their answer matches any entry.</div>
             </div>
           </div>
           <div class="subject-field" style="margin-top:12px">
@@ -4548,6 +4655,24 @@ function showQuizSetDetails(quizId) {
         button.closest('.quiz-editor-question-card')?.remove();
         renumberQuestionCards();
       };
+    });
+    // Toggle the per-type field blocks live when the teacher changes the
+    // question type dropdown. Only the block for the current type is shown.
+    inner.querySelectorAll('.quiz-editor-question-card').forEach((card) => {
+      const typeSelect = card.querySelector('.quiz-editor-type');
+      if (!typeSelect) return;
+      const updateBlocks = () => {
+        const t = normalizeQuestionType(typeSelect.value);
+        card.dataset.questionType = t;
+        card.querySelectorAll('.quiz-editor-type-block').forEach((block) => {
+          const blockType = block.classList.contains('quiz-editor-type-block-mcq') ? 'mcq'
+            : block.classList.contains('quiz-editor-type-block-yesno') ? 'yesno'
+            : block.classList.contains('quiz-editor-type-block-short') ? 'short'
+            : 'essay';
+          block.style.display = (t === blockType) ? '' : 'none';
+        });
+      };
+      typeSelect.onchange = updateBlocks;
     });
     if (!canEditThisQuiz) {
       inner.querySelectorAll('.quiz-editor-list input, .quiz-editor-list textarea, .quiz-editor-list select').forEach((field) => {
@@ -6128,46 +6253,79 @@ function renderQuizTake() {
           </div>
           ${currentSection.indices.map((globalIndex, localIndex) => {
             const qq = sub.allQuestions[globalIndex];
-            const opts = (qq.options || []).map((opt, optionIndex) => {
-              const letter = String.fromCharCode(65 + optionIndex);
-              const checked = sub.answers[globalIndex] === letter ? 'checked' : '';
-              return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${globalIndex}" data-idx="${globalIndex}" value="${letter}" ${checked} /><div class="preserve-format rich-text-output" style="margin-left:28px">${letter}. ${renderRichTextHtml(opt)}</div></label>`;
-            }).join('');
+            const qType = normalizeQuestionType(qq.type);
+            let widget = '';
+            if (qType === 'mcq') {
+              widget = (qq.options || []).map((opt, optionIndex) => {
+                const letter = String.fromCharCode(65 + optionIndex);
+                const checked = sub.answers[globalIndex] === letter ? 'checked' : '';
+                return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${globalIndex}" data-idx="${globalIndex}" value="${letter}" ${checked} /><div class="preserve-format rich-text-output" style="margin-left:28px">${letter}. ${renderRichTextHtml(opt)}</div></label>`;
+              }).join('');
+            } else if (qType === 'yesno') {
+              const stored = (sub.answers[globalIndex] || '').toString();
+              widget = ['Yes', 'No'].map((label) => {
+                const checked = stored === label ? 'checked' : '';
+                return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${globalIndex}" data-idx="${globalIndex}" value="${label}" ${checked} /><span style="margin-left:28px">${label}</span></label>`;
+              }).join('');
+            } else if (qType === 'short') {
+              const stored = escapeHtml((sub.answers[globalIndex] || '').toString());
+              widget = `<input id="shortAns-${globalIndex}" data-idx="${globalIndex}" class="input-beautiful exam-short-input" type="text" value="${stored}" placeholder="Type your answer here" autocomplete="off" />`;
+            } else if (qType === 'essay') {
+              const stored = escapeHtml((sub.answers[globalIndex] || '').toString());
+              widget = `<textarea id="essayAns-${globalIndex}" data-idx="${globalIndex}" class="input-beautiful exam-essay-input" rows="8" placeholder="Write your answer here. Your teacher will mark this manually.">${stored}</textarea>`;
+            }
             return `
-              <div class="question-card" id="questionCard-${globalIndex}" data-question-card="${globalIndex}" style="margin-bottom:12px">
+              <div class="question-card" id="questionCard-${globalIndex}" data-question-card="${globalIndex}" data-question-type="${qType}" style="margin-bottom:12px">
                 <div class="small" style="color:#0F766E;font-weight:700">${escapeHtml(currentSection.name)}</div>
                 <div class="h3">Question ${localIndex + 1} of ${currentSection.total}</div>
                 ${renderQuestionMediaAssets(qq, 'before')}
                 <div style="margin-top:8px" class="body preserve-format rich-text-output">${renderRichTextHtml(qq.question)}</div>
                 ${renderQuestionMediaAssets(qq, 'after')}
-                <div class="options" id="optionsList-${globalIndex}">${opts}</div>
+                <div class="options" id="optionsList-${globalIndex}">${widget}</div>
               </div>
             `;
           }).join('')}
         `;
         currentSection.indices.forEach((globalIndex) => {
-          document.querySelectorAll(`input[name="opt-${globalIndex}"]`).forEach((input) => {
-            input.onclick = (event) => {
-              if (sub.answers[globalIndex] === input.value) {
-                event.preventDefault();
-                event.stopPropagation();
-                input.checked = false;
-                delete sub.answers[globalIndex];
+          const qType = normalizeQuestionType(sub.allQuestions[globalIndex].type);
+          if (qType === 'mcq' || qType === 'yesno') {
+            document.querySelectorAll(`input[name="opt-${globalIndex}"]`).forEach((input) => {
+              input.onclick = (event) => {
+                if (sub.answers[globalIndex] === input.value) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  input.checked = false;
+                  delete sub.answers[globalIndex];
+                  saveExamDraft(sub);
+                  renderQuestionPalette();
+                  updateExamChrome();
+                  renderVerticalSubjectView();
+                }
+              };
+              input.onchange = (event) => {
+                sub.currentIndex = globalIndex;
+                sub.currentSubjectIndex = getSubjectSectionIndexForQuestion(subjectSections, globalIndex);
+                sub.answers[globalIndex] = event.target.value;
                 saveExamDraft(sub);
                 renderQuestionPalette();
                 updateExamChrome();
-                renderVerticalSubjectView();
-              }
-            };
-            input.onchange = (event) => {
-              sub.currentIndex = globalIndex;
-              sub.currentSubjectIndex = getSubjectSectionIndexForQuestion(subjectSections, globalIndex);
-              sub.answers[globalIndex] = event.target.value;
-              saveExamDraft(sub);
-              renderQuestionPalette();
-              updateExamChrome();
-            };
-          });
+              };
+            });
+          } else if (qType === 'short' || qType === 'essay') {
+            const input = document.getElementById(qType === 'short' ? `shortAns-${globalIndex}` : `essayAns-${globalIndex}`);
+            if (input) {
+              const persist = () => {
+                const v = (input.value || '').toString();
+                if (v.trim()) sub.answers[globalIndex] = v;
+                else delete sub.answers[globalIndex];
+                saveExamDraft(sub);
+                renderQuestionPalette();
+                updateExamChrome();
+              };
+              input.oninput = persist;
+              input.onblur = persist;
+            }
+          }
         });
         qa.querySelectorAll('[data-question-card]').forEach((card) => {
           card.onclick = () => {
@@ -6192,11 +6350,28 @@ function renderQuizTake() {
         syncSubjectIndexToCurrentQuestion();
         const position = getQuestionPositionWithinSubject(subjectSections, idx);
         const currentSection = subjectSections[position.sectionIndex] || getCurrentSection();
-        const opts = (qq.options || []).map((opt, i) => {
-          const letter = String.fromCharCode(65 + i);
-          const checked = sub.answers[idx] === letter ? 'checked' : '';
-          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /><div class="preserve-format rich-text-output" style="margin-left:28px">${letter}. ${renderRichTextHtml(opt)}</div></label>`;
-        }).join('');
+        const qType = normalizeQuestionType(qq.type);
+        let answerWidget = '';
+        if (qType === 'mcq') {
+          answerWidget = (qq.options || []).map((opt, i) => {
+            const letter = String.fromCharCode(65 + i);
+            const checked = sub.answers[idx] === letter ? 'checked' : '';
+            return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /><div class="preserve-format rich-text-output" style="margin-left:28px">${letter}. ${renderRichTextHtml(opt)}</div></label>`;
+          }).join('');
+        } else if (qType === 'yesno') {
+          const stored = (sub.answers[idx] || '').toString();
+          ['Yes', 'No'].forEach(() => {});
+          answerWidget = ['Yes', 'No'].map((label) => {
+            const checked = stored === label ? 'checked' : '';
+            return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${label}" ${checked} /><span style="margin-left:28px">${label}</span></label>`;
+          }).join('');
+        } else if (qType === 'short') {
+          const stored = escapeHtml((sub.answers[idx] || '').toString());
+          answerWidget = `<input id="shortAns-${idx}" data-idx="${idx}" class="input-beautiful exam-short-input" type="text" value="${stored}" placeholder="Type your answer here" autocomplete="off" />`;
+        } else if (qType === 'essay') {
+          const stored = escapeHtml((sub.answers[idx] || '').toString());
+          answerWidget = `<textarea id="essayAns-${idx}" data-idx="${idx}" class="input-beautiful exam-essay-input" rows="8" placeholder="Write your answer here. Your teacher will mark this manually.">${stored}</textarea>`;
+        }
 
         qa.innerHTML = `
           <div class="question-card" style="margin-bottom:12px">
@@ -6205,7 +6380,7 @@ function renderQuizTake() {
             ${renderQuestionMediaAssets(qq, 'before')}
             <div style="margin-top:8px" class="body preserve-format rich-text-output">${renderRichTextHtml(qq.question)}</div>
             ${renderQuestionMediaAssets(qq, 'after')}
-            <div class="options" id="optionsList-${idx}">${opts}</div>
+            <div class="options" id="optionsList-${idx}">${answerWidget}</div>
             <div class="question-inline-actions" style="display:flex;justify-content:space-between;margin-top:12px">
               <div>
                 <button id="prevQ" class="btn btn-ghost btn-sm">Prev</button>
@@ -6221,21 +6396,37 @@ function renderQuizTake() {
 
         setTimeout(() => {
           updateExamChrome();
-          document.querySelectorAll(`#optionsList-${idx} input[type=\"radio\"]`).forEach(i => {
-            i.onclick = (event) => {
-              if (sub.answers[idx] === i.value) {
-                event.preventDefault();
-                event.stopPropagation();
-                i.checked = false;
-                delete sub.answers[idx];
+          if (qType === 'mcq' || qType === 'yesno') {
+            document.querySelectorAll(`#optionsList-${idx} input[type="radio"]`).forEach(i => {
+              i.onclick = (event) => {
+                if (sub.answers[idx] === i.value) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  i.checked = false;
+                  delete sub.answers[idx];
+                  saveExamDraft(sub);
+                  renderQuestionPalette();
+                  updateExamChrome();
+                  renderQuestion(idx);
+                }
+              };
+              i.onchange = (e) => { sub.answers[idx] = e.target.value; saveExamDraft(sub); renderQuestionPalette(); updateExamChrome(); };
+            });
+          } else if (qType === 'short' || qType === 'essay') {
+            const input = document.getElementById(qType === 'short' ? `shortAns-${idx}` : `essayAns-${idx}`);
+            if (input) {
+              const persist = () => {
+                const v = (input.value || '').toString();
+                if (v.trim()) sub.answers[idx] = v;
+                else delete sub.answers[idx];
                 saveExamDraft(sub);
                 renderQuestionPalette();
                 updateExamChrome();
-                renderQuestion(idx);
-              }
-            };
-            i.onchange = (e) => { sub.answers[idx] = e.target.value; saveExamDraft(sub); renderQuestionPalette(); updateExamChrome(); };
-          });
+              };
+              input.oninput = persist;
+              input.onblur = persist;
+            }
+          }
           const prev = document.getElementById('prevQ'); if (prev) prev.onclick = () => { if (moveQuestion(-1)) { renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
           const next = document.getElementById('nextQ'); if (next) next.onclick = () => { if (moveQuestion(1)) { renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
           const saveBtn = document.getElementById('saveQ'); if (saveBtn) saveBtn.onclick = () => { showNotification('Saved locally', 'success'); };
@@ -7521,18 +7712,46 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   if (opts.showNegativePenalty) metaCards.push({ label: 'Negative Penalty', value: formatScoreValue(submission.negativePenalty || 0) });
   const questionCards = entries.map((entry) => {
     const question = entry.question || {};
-    const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
-    const correct = (question.answer || '').toString().toUpperCase();
-    const statusText = chosen && chosen === correct ? 'Correct' : 'Incorrect';
+    const qType = normalizeQuestionType(question.type);
+    const rawChosen = submission.answers && submission.answers[entry.originalIndex] != null ? submission.answers[entry.originalIndex] : '';
+    const chosen = rawChosen == null ? '' : rawChosen.toString();
+    // Use the same evaluator the marker uses, so the correction view shows
+    // the same verdict for every question type.
+    const verdict = evaluateAnswerForQuestion(question, chosen, null, entry.originalIndex);
+    let statusText = 'Incorrect';
+    if (verdict === 'correct') statusText = 'Correct';
+    else if (verdict === 'pending') statusText = 'Pending Review';
+    else if (verdict === 'unanswered') statusText = chosen ? 'Incorrect' : 'No answer';
     const topic = question.topic || entry.subject || 'General';
     const keyConcept = question.keyConcept || question.topic || entry.subject || 'General';
     const explanation = question.explanation || 'No explanation provided yet.';
     const learningPoint = question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.';
-    const studentAnswerText = chosen ? `${chosen}. ${getDisplayOptionText(question, chosen)}` : 'No answer';
-    const correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
     const longCardClass = isPdfExportLongCard(question.question || '', explanation, learningPoint) ? ' long-card' : '';
+    // Per-type student/correct answer text + the optional options listing.
+    let studentAnswerText = '';
+    let correctAnswerText = '';
+    let optionsBlock = '';
+    if (qType === 'mcq') {
+      const correct = (question.answer || '').toString().toUpperCase();
+      studentAnswerText = chosen ? `${chosen.toUpperCase()}. ${getDisplayOptionText(question, chosen.toUpperCase())}` : 'No answer';
+      correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
+      optionsBlock = `<div class="pdf-meta-line"><strong>Options:</strong></div>${buildPdfOptionListHtml(question, { selectedAnswer: chosen.toUpperCase(), correctAnswer: correct })}`;
+    } else if (qType === 'yesno') {
+      studentAnswerText = chosen || 'No answer';
+      correctAnswerText = (question.answer || 'Not set').toString();
+    } else if (qType === 'short') {
+      studentAnswerText = chosen || 'No answer';
+      const accepted = Array.isArray(question.acceptedAnswers) ? question.acceptedAnswers.filter(Boolean) : [];
+      correctAnswerText = accepted.length ? accepted.join(' / ') : 'Not set';
+    } else if (qType === 'essay') {
+      studentAnswerText = chosen || 'No answer';
+      correctAnswerText = 'Manually graded by teacher';
+    }
+    const statusClass = statusText === 'Correct' ? 'status-correct'
+      : statusText === 'Pending Review' ? 'status-pending'
+      : 'status-incorrect';
     return `
-      <section class="pdf-question-card ${statusText === 'Correct' ? 'status-correct' : 'status-incorrect'} avoid-break${longCardClass}">
+      <section class="pdf-question-card ${statusClass} avoid-break${longCardClass}">
         <div class="pdf-question-head">
           <div class="pdf-question-number">Question ${entry.originalIndex + 1}</div>
           <div class="pdf-question-status">${statusText}</div>
@@ -7541,11 +7760,11 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
         <div class="pdf-question-text rich-text-output">${renderRichTextHtml(question.question || '')}</div>
         ${renderQuestionMediaAssets(question, 'after')}
         <div class="pdf-meta-line"><strong>Status:</strong> ${escapeHtml(statusText)}</div>
+        <div class="pdf-meta-line"><strong>Type:</strong> ${escapeHtml(qType === 'mcq' ? 'Multiple Choice' : qType === 'yesno' ? 'Yes / No' : qType === 'short' ? 'Short Answer' : 'Long Answer (Essay)')}</div>
         <div class="pdf-meta-line"><strong>Key concept:</strong> <div class="rich-text-output">${renderRichTextHtml(keyConcept)}</div></div>
         ${breakdown.length > 1 ? `<div class="pdf-meta-line"><strong>Subject:</strong> ${escapeHtml(sanitizeScientificText(entry.subject || 'General'))}</div>` : ''}
-        <div class="pdf-meta-line"><strong>Options:</strong></div>
-        ${buildPdfOptionListHtml(question, { selectedAnswer: chosen, correctAnswer: correct })}
-        <div class="pdf-meta-line"><strong>Student answer:</strong> ${escapeHtml(studentAnswerText)}</div>
+        ${optionsBlock}
+        <div class="pdf-meta-line"><strong>Student answer:</strong> <div style="white-space:pre-wrap">${escapeHtml(studentAnswerText)}</div></div>
         <div class="pdf-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
         <div class="pdf-meta-line"><strong>Topic:</strong> <div class="rich-text-output">${renderRichTextHtml(topic)}</div></div>
         <div class="pdf-meta-line pdf-writeup"><strong>Explanation:</strong> <div class="rich-text-output">${renderRichTextHtml(explanation)}</div></div>
@@ -8652,14 +8871,32 @@ function hasManualScoreOverride(submission) {
   return Number.isFinite(Number(submission.manualScoreOverride));
 }
 
+function submissionHasPendingEssay(submission) {
+  if (!submission || !Array.isArray(submission.allQuestions)) return false;
+  const answers = submission.answers || {};
+  const essayScores = submission.essayScores || {};
+  return submission.allQuestions.some((question, index) => {
+    if (normalizeQuestionType(question && question.type) !== 'essay') return false;
+    const ans = (answers[index] || '').toString().trim();
+    if (!ans) return false; // unanswered essay doesn't need grading
+    const sid = (question && question._sourceId) || makeQuestionId(question, index);
+    const recorded = essayScores[sid];
+    return recorded == null || !Number.isFinite(Number(recorded));
+  });
+}
+
 function buildSubmissionGradeState(submission, quiz, baseGrade = gradeSubmissionForQuiz(submission, quiz)) {
   const passMark = parseFloat((quiz && quiz.passMark) || submission.passMark || 50) || 50;
+  const pending = submissionHasPendingEssay(submission);
   if (!hasManualScoreOverride(submission)) {
     return {
       ...baseGrade,
       passMark,
-      resultStatus: baseGrade.percent >= passMark ? 'Pass' : 'Fail',
-      manualOverride: false
+      // If any essay answer is awaiting the teacher's manual score, the
+      // overall status is "Pending Review" rather than Pass/Fail.
+      resultStatus: pending ? 'Pending Review' : (baseGrade.percent >= passMark ? 'Pass' : 'Fail'),
+      manualOverride: false,
+      pendingEssayReview: pending
     };
   }
   const maxScore = getQuizTotalMarks(quiz, submission.allQuestions || []);
@@ -8677,8 +8914,103 @@ function buildSubmissionGradeState(submission, quiz, baseGrade = gradeSubmission
     averagePercent,
     passMark,
     resultStatus: percent >= passMark ? 'Pass' : 'Fail',
-    manualOverride: true
+    manualOverride: true,
+    pendingEssayReview: false
   };
+}
+
+// Build an inline essay-grading panel that lists every essay answer in this
+// submission with the student's text and a numeric "Score: __ / N" input.
+// Saved scores live on `submission.essayScores[sourceId]`. Saving regrades
+// the submission and re-syncs.
+function buildEssayGradingPanelHtml(quiz, submission) {
+  const questions = Array.isArray(submission && submission.allQuestions) ? submission.allQuestions : [];
+  const answers = (submission && submission.answers) || {};
+  const essayScores = (submission && submission.essayScores) || {};
+  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const subjectMaxBySection = new Map();
+  breakdown.forEach((section) => subjectMaxBySection.set(normalizeSubjectName(section.name), section.markPerQuestion || 0));
+  const essayItems = [];
+  questions.forEach((q, index) => {
+    if (normalizeQuestionType(q && q.type) !== 'essay') return;
+    const studentAnswer = (answers[index] || '').toString();
+    if (!studentAnswer.trim()) return;
+    const sid = (q && q._sourceId) || makeQuestionId(q, index);
+    const sectionName = normalizeSubjectName(q.subject || q._subject || 'General');
+    const maxMarks = Math.round((subjectMaxBySection.get(sectionName) || 1) * 100) / 100 || 1;
+    const recorded = essayScores[sid];
+    essayItems.push({ index, sourceId: sid, question: q, studentAnswer, maxMarks, recorded });
+  });
+  if (!essayItems.length) return '';
+  const rows = essayItems.map((item) => `
+    <div class="card-beautiful essay-grade-row" data-source-id="${escapeHtml(item.sourceId)}" style="padding:14px;margin-top:12px">
+      <div class="small" style="color:#475569;margin-bottom:4px">Question ${item.index + 1} • Long Answer (Essay)</div>
+      <div class="rich-text-output" style="margin-bottom:8px;font-weight:600">${renderRichTextHtml(item.question.question || '')}</div>
+      <div class="small" style="color:#475569">Student answer:</div>
+      <div style="white-space:pre-wrap;border:1px solid #E2E8F0;border-radius:10px;padding:10px;background:#F8FAFC;margin-top:6px;line-height:1.55">${escapeHtml(item.studentAnswer)}</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
+        <label class="small">Score</label>
+        <input type="number" min="0" max="${item.maxMarks}" step="0.5" class="input-beautiful essay-grade-score" value="${item.recorded != null && Number.isFinite(Number(item.recorded)) ? Number(item.recorded) : ''}" style="max-width:120px" />
+        <span class="small">/ ${item.maxMarks}</span>
+        <button type="button" class="btn btn-primary btn-sm essay-grade-save">Save</button>
+      </div>
+    </div>
+  `).join('');
+  return `
+    <div class="card-beautiful" id="essayGradingPanel" style="margin-top:18px;padding:14px">
+      <div class="h3" style="margin:0">Essay Grading</div>
+      <div class="small" style="margin-top:6px;color:#475569;line-height:1.55">
+        Long-answer questions are not auto-marked. Enter a score for each essay below and click Save.
+        The student's overall result stays "Pending Review" until every essay has a score.
+      </div>
+      ${rows}
+    </div>
+  `;
+}
+
+function wireEssayGradingPanel(quiz, submission) {
+  const panel = document.getElementById('essayGradingPanel');
+  if (!panel) return;
+  panel.querySelectorAll('.essay-grade-row').forEach((row) => {
+    const sourceId = row.dataset.sourceId || '';
+    const input = row.querySelector('.essay-grade-score');
+    const saveBtn = row.querySelector('.essay-grade-save');
+    if (!sourceId || !input || !saveBtn) return;
+    saveBtn.onclick = () => {
+      const raw = (input.value || '').toString().trim();
+      const numeric = raw === '' ? null : Number(raw);
+      if (raw !== '' && (!Number.isFinite(numeric) || numeric < 0)) {
+        showNotification('Enter a valid score (0 or higher).', 'error');
+        return;
+      }
+      // Update the source-of-truth submission stored in localStorage so the
+      // grade survives reloads and sync.
+      const all = getAllSubmissions();
+      const idx = findSubmissionIndexByIdentity(all, submission.quizId, submission.email, submission.submittedAt || '');
+      if (idx < 0) {
+        showNotification('Could not locate this submission in storage.', 'error');
+        return;
+      }
+      const target = { ...all[idx] };
+      target.essayScores = { ...(target.essayScores || {}) };
+      if (numeric == null) delete target.essayScores[sourceId];
+      else target.essayScores[sourceId] = numeric;
+      const grade = buildSubmissionGradeState(target, quiz);
+      applyGradeToSubmission(target, grade);
+      target.updatedAt = new Date().toISOString();
+      all[idx] = target;
+      saveAllSubmissions(all);
+      // Reflect on the in-memory submission too.
+      submission.essayScores = target.essayScores;
+      applyGradeToSubmission(submission, grade);
+      syncSharedKeys([STORAGE_KEYS.submissions]).catch(() => {});
+      showNotification('Essay score saved.', 'success', 4000);
+      // Re-render the result modal to refresh score / Pending Review status.
+      const modal = document.getElementById('studentResultModal');
+      if (modal) modal.remove();
+      showStudentResultModalFromSubmission(quiz, target, true);
+    };
+  });
 }
 
 function applyGradeToSubmission(submission, grade) {
@@ -8693,6 +9025,7 @@ function applyGradeToSubmission(submission, grade) {
   submission.subjectBreakdown = Array.isArray(grade.subjectBreakdown) ? grade.subjectBreakdown.map((item) => ({ ...item })) : [];
   submission.passMark = grade.passMark;
   submission.resultStatus = grade.resultStatus;
+  submission.pendingEssayReview = !!grade.pendingEssayReview;
 }
 
 function buildCertificateBrandMarkup() {
@@ -10445,13 +10778,13 @@ function showCreateQuizModal(editQuizId = '') {
         return;
       }
       host.innerHTML = groups.map((group, index) => `
-        <div class="card" data-subject-image-index="${index}" style="padding:12px;border:1px solid #DBEAFE;box-shadow:none">
-          <div style="display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr) auto;gap:12px;align-items:flex-start">
-            <div>
-              ${group.src ? `<img src="${group.src.replace(/"/g, '&quot;')}" alt="${escapeHtml(group.altText || group.fileName || 'Question image')}" style="display:block;width:100%;max-width:150px;height:auto;border-radius:12px;border:1px solid #BFDBFE;background:#EFF6FF" />` : '<div class="small" style="padding:20px 12px;border:1px dashed #BFDBFE;border-radius:12px;background:#EFF6FF;text-align:center;color:#475569">Choose image</div>'}
-              <div class="small" style="margin-top:8px;color:#475569">${escapeHtml(group.fileName || 'No image selected')}</div>
+        <div class="card subject-image-card" data-subject-image-index="${index}" style="padding:12px;border:1px solid #DBEAFE;box-shadow:none">
+          <div class="subject-image-card-grid">
+            <div class="subject-image-card-thumb">
+              ${group.src ? `<img src="${group.src.replace(/"/g, '&quot;')}" alt="${escapeHtml(group.altText || group.fileName || 'Question image')}" />` : '<div class="subject-image-card-placeholder">Choose image</div>'}
+              <div class="small subject-image-card-filename">${escapeHtml(group.fileName || 'No image selected')}</div>
             </div>
-            <div style="display:grid;gap:10px">
+            <div class="subject-image-card-fields">
               <div>
                 <label class="small">Question number(s)</label>
                 <input type="text" class="input-beautiful subject-image-numbers" value="${escapeHtml(group.questionNumbersText || '')}" placeholder="e.g. 1, 3, 5" />
@@ -10465,7 +10798,7 @@ function showCreateQuizModal(editQuizId = '') {
                 </select>
               </div>
             </div>
-            <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="subject-image-card-actions">
               <button type="button" class="btn btn-secondary btn-sm subject-image-upload-btn">${group.src ? 'Replace Image' : 'Choose Image'}</button>
               <button type="button" class="btn btn-ghost btn-sm subject-image-remove-btn">Remove</button>
             </div>
@@ -11186,19 +11519,48 @@ function getQuizAnswerMap(quiz) {
   return map;
 }
 
+// Decide if a single answer is correct, normalized per question type.
+// Returns one of 'correct' | 'wrong' | 'pending' | 'unanswered'.
+function evaluateAnswerForQuestion(question, rawAnswer, answerMap, index) {
+  const qType = normalizeQuestionType(question && question.type);
+  const stored = rawAnswer == null ? '' : rawAnswer.toString();
+  const trimmed = stored.trim();
+  if (!trimmed) return 'unanswered';
+  if (qType === 'mcq') {
+    const sourceId = (question && question._sourceId) || makeQuestionId(question, index);
+    const correctAnswer = ((question && question.answer) || (answerMap && answerMap[sourceId]) || '').toString().toUpperCase();
+    return trimmed.toUpperCase() === correctAnswer ? 'correct' : 'wrong';
+  }
+  if (qType === 'yesno') {
+    const correct = ((question && question.answer) || '').toString().trim().toLowerCase();
+    return trimmed.toLowerCase() === correct ? 'correct' : 'wrong';
+  }
+  if (qType === 'short') {
+    const accepted = Array.isArray(question && question.acceptedAnswers) ? question.acceptedAnswers : [];
+    const norm = trimmed.toLowerCase();
+    return accepted.some((entry) => (entry || '').toString().trim().toLowerCase() === norm)
+      ? 'correct' : 'wrong';
+  }
+  if (qType === 'essay') {
+    // Essay questions are graded manually by the teacher. If a manual score
+    // has been recorded, treat the question as graded; otherwise pending.
+    return 'pending';
+  }
+  return 'unanswered';
+}
+
 function gradeSubmissionForQuiz(submission, quiz) {
   const all = submission.allQuestions || [];
   const answers = submission.answers || {};
   const answerMap = getQuizAnswerMap(quiz);
-  let correctCount = 0, wrongCount = 0, attemptedCount = 0;
+  let correctCount = 0, wrongCount = 0, attemptedCount = 0, pendingCount = 0;
   all.forEach((question, index) => {
-    const chosen = (answers[index] || '').toString().toUpperCase();
-    if (!chosen) return;
+    const verdict = evaluateAnswerForQuestion(question, answers[index], answerMap, index);
+    if (verdict === 'unanswered') return;
     attemptedCount++;
-    const sourceId = question._sourceId || makeQuestionId(question, index);
-    const correctAnswer = (question.answer || answerMap[sourceId] || '').toString().toUpperCase();
-    if (chosen === correctAnswer) correctCount++;
-    else wrongCount++;
+    if (verdict === 'correct') correctCount++;
+    else if (verdict === 'wrong') wrongCount++;
+    else if (verdict === 'pending') pendingCount++;
   });
   const subjectBreakdown = computeSubmissionSubjectBreakdown(quiz, submission);
   const score = Math.round(subjectBreakdown.reduce((sum, item) => sum + (item.score || 0), 0) * 100) / 100;
@@ -11208,7 +11570,7 @@ function gradeSubmissionForQuiz(submission, quiz) {
   const averagePercent = subjectBreakdown.length
     ? Math.round(subjectBreakdown.reduce((sum, item) => sum + (item.percent || 0), 0) / subjectBreakdown.length)
     : percent;
-  return { score, percent, correctCount, wrongCount, attemptedCount, negativePenalty, totalMarks, subjectBreakdown, averagePercent };
+  return { score, percent, correctCount, wrongCount, attemptedCount, pendingCount, negativePenalty, totalMarks, subjectBreakdown, averagePercent };
 }
 
 function regradeSubmissionsForQuiz(quiz) {
@@ -11225,7 +11587,8 @@ function regradeSubmissionsForQuiz(quiz) {
       sub.attemptedCount !== grade.attemptedCount ||
       sub.negativePenalty !== grade.negativePenalty ||
       sub.passMark !== grade.passMark ||
-      sub.resultStatus !== grade.resultStatus;
+      sub.resultStatus !== grade.resultStatus ||
+      !!sub.pendingEssayReview !== !!grade.pendingEssayReview;
     if (!hasDiff) return;
     applyGradeToSubmission(sub, grade);
     sub.regradedAt = new Date().toISOString();
@@ -11258,26 +11621,54 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
   const negativeEnabled = !!quiz?.negativeMarkEnabled;
   const negativeValue = parseFloat(quiz?.negativeMarkValue || 0) || 0;
   const subjectMetaMap = getQuizSubjectMetaMap(quiz);
+  const answerMap = getQuizAnswerMap(quiz);
+  // Manual essay scores keyed by question source id, set by the teacher's
+  // grading panel and stored on the submission as `essayScores`.
+  const essayScores = (submission && submission.essayScores) || {};
   return sections.map((section) => {
     let attempted = 0;
     let correct = 0;
     let wrong = 0;
+    let essayMarksAwarded = 0;
+    let essayMaxMarks = 0;
+    let pendingEssay = false;
     section.indices.forEach((globalIndex) => {
       const question = submission.allQuestions[globalIndex];
-      const chosen = (answers[globalIndex] || '').toString().toUpperCase();
-      if (!chosen) return;
+      const qType = normalizeQuestionType(question && question.type);
+      const verdict = evaluateAnswerForQuestion(question, answers[globalIndex], answerMap, globalIndex);
+      if (verdict === 'unanswered') return;
       attempted++;
-      const expected = (question?.answer || '').toString().toUpperCase();
-      if (chosen === expected) correct++;
-      else wrong++;
+      if (qType === 'essay') {
+        // Essay marks are awarded manually. Until the teacher records a score
+        // via the grading panel, the question is "pending" and contributes 0
+        // to the score (but counts toward attempts so the student sees it
+        // attempted).
+        const sid = question._sourceId || makeQuestionId(question, globalIndex);
+        const recorded = essayScores[sid];
+        if (recorded != null && Number.isFinite(Number(recorded))) {
+          essayMarksAwarded += Math.max(0, Number(recorded));
+        } else {
+          pendingEssay = true;
+        }
+      } else if (verdict === 'correct') {
+        correct++;
+      } else if (verdict === 'wrong') {
+        wrong++;
+      }
     });
     const meta = subjectMetaMap.get(normalizeSubjectName(section.name)) || {};
     const totalMarks = getSubjectTotalMarks({ totalMarks: meta.totalMarks, questionCount: section.total });
     const markPerQuestion = section.total > 0 ? totalMarks / section.total : 0;
-    const rawUnits = correct - (negativeEnabled ? wrong * negativeValue : 0);
-    const rawScore = rawUnits * markPerQuestion;
-    const score = Math.max(0, Math.round(rawScore * 100) / 100);
+    // Essay max marks for this section = mark-per-question × essay count.
+    section.indices.forEach((globalIndex) => {
+      const question = submission.allQuestions[globalIndex];
+      if (normalizeQuestionType(question && question.type) === 'essay') essayMaxMarks += markPerQuestion;
+    });
+    const autoScore = correct * markPerQuestion;
     const negativePenalty = negativeEnabled ? Math.round((wrong * negativeValue * markPerQuestion) * 100) / 100 : 0;
+    const cappedEssayMarks = Math.min(essayMaxMarks, essayMarksAwarded);
+    const rawScore = autoScore + cappedEssayMarks - (negativeEnabled ? wrong * negativeValue * markPerQuestion : 0);
+    const score = Math.max(0, Math.round(rawScore * 100) / 100);
     const percent = totalMarks ? clampPercent((score / totalMarks) * 100) : 0;
     return {
       name: section.name,
@@ -11289,7 +11680,10 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
       wrong,
       score,
       percent,
-      negativePenalty
+      negativePenalty,
+      pendingEssay,
+      essayMaxMarks: Math.round(essayMaxMarks * 100) / 100,
+      essayMarksAwarded: Math.round(cappedEssayMarks * 100) / 100
     };
   });
 }
@@ -11642,8 +12036,18 @@ function showStudentResultModalFromSubmission(quiz, submission, includeActions =
   modal.className = 'student-result-modal';
   const inner = document.createElement('div');
   inner.className = 'student-result-modal-card';
-  inner.innerHTML = buildStudentResultFullHtml(quizData, submission, ranks[normalizeEmail(submission.email)] || '-', { includeActions });
+  // Show the result summary first, then append the essay-grading panel for
+  // teachers when the submission contains essay answers that need a manual
+  // score. The panel only renders when the viewer is the quiz owner /
+  // super-admin (regular students never see it).
+  const resultHtml = buildStudentResultFullHtml(quizData, submission, ranks[normalizeEmail(submission.email)] || '-', { includeActions });
+  const canGradeEssays = includeActions && (
+    isSuperAdmin() || (state.teacherId && quizData && normalizeEmail(quizData.teacherId) === normalizeEmail(state.teacherId))
+  );
+  const essayPanelHtml = canGradeEssays ? buildEssayGradingPanelHtml(quizData, submission) : '';
+  inner.innerHTML = resultHtml + essayPanelHtml;
   modal.appendChild(inner); document.body.appendChild(modal);
+  if (canGradeEssays) wireEssayGradingPanel(quizData, submission);
   const closeModal = () => {
     modal.remove();
     if (state.view === 'student.result') {

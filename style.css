@@ -701,6 +701,22 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 /* Ensure minimum tap target */
 .tap-target{min-height:44px;min-width:44px;padding:8px 12px;display:inline-flex;align-items:center;justify-content:center}
 
+/* Subject image attach card — desktop = 3 columns, mobile stacks vertically */
+.subject-image-card-grid{display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr) auto;gap:12px;align-items:flex-start}
+.subject-image-card-thumb img{display:block;width:100%;max-width:150px;height:auto;border-radius:12px;border:1px solid #BFDBFE;background:#EFF6FF}
+.subject-image-card-placeholder{padding:20px 12px;border:1px dashed #BFDBFE;border-radius:12px;background:#EFF6FF;text-align:center;color:#475569;font-size:12px}
+.subject-image-card-filename{margin-top:8px;color:#475569}
+.subject-image-card-fields{display:grid;gap:10px;min-width:0}
+.subject-image-card-actions{display:flex;flex-direction:column;gap:8px}
+.subject-image-card-actions .btn{white-space:nowrap}
+@media (max-width:720px){
+	.subject-image-card-grid{grid-template-columns:1fr;gap:14px}
+	.subject-image-card-thumb{display:flex;flex-direction:column;align-items:center;text-align:center}
+	.subject-image-card-thumb img{max-width:220px}
+	.subject-image-card-actions{flex-direction:row;flex-wrap:wrap;gap:10px}
+	.subject-image-card-actions .btn{flex:1 1 140px;min-height:44px}
+}
+
 /* Responsive tweaks */
 @media (max-width: 900px){
 	.doc-content{padding:28px 20px}
