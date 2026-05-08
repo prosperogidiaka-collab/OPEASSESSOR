@@ -1651,10 +1651,27 @@ function applyNetworkSnapshot(snapshot) {
   return changed;
 }
 
+// Hard cap on a single sync HTTP call so a stuck Vercel cold-start or a
+// silently-dropped TLS connection can't leave the queue blocked forever.
+const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 12000;
+// Vercel's default JSON body limit is ~4.5 MB. Stay under it so a fat
+// `quizzes` payload (with embedded images etc.) returns a useful error to the
+// user instead of a generic 413 / connection reset.
+const NETWORK_SYNC_MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQUEST_TIMEOUT_MS) {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), Math.max(2000, timeoutMs)) : null;
+  const finalOptions = controller ? { ...options, signal: controller.signal } : options;
+  const fetchPromise = fetch(url, finalOptions);
+  fetchPromise.finally(() => { if (timer) clearTimeout(timer); });
+  return fetchPromise;
+}
+
 async function pullNetworkState(force = false) {
   if (!canUseNetworkSync()) return false;
   if (networkSyncInFlight && !force) return networkSyncInFlight;
-  networkSyncInFlight = fetch(buildApiUrl('/api/state'), { cache: 'no-store' })
+  networkSyncInFlight = makeAbortableSyncFetch(buildApiUrl('/api/state'), { cache: 'no-store' })
     .then(async (res) => {
       if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Network sync unavailable'));
       const snapshot = await res.json();
@@ -1667,7 +1684,10 @@ async function pullNetworkState(force = false) {
     })
     .catch((error) => {
       networkSyncFailed = true;
-      networkSyncFailureMessage = explainNetworkSyncFailureMessage(error && error.message ? error.message : 'Network sync unavailable');
+      const reason = error && error.name === 'AbortError'
+        ? `Cloud sync timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s. The server is slow or unreachable.`
+        : (error && error.message ? error.message : 'Network sync unavailable');
+      networkSyncFailureMessage = explainNetworkSyncFailureMessage(reason);
       return false;
     })
     .finally(() => { networkSyncInFlight = null; });
@@ -1683,6 +1703,8 @@ async function pushNetworkValue(key, value, options = {}) {
   const stateKey = NETWORK_STATE_KEY_MAP[key];
   if (stateKey !== 'submissions' && !getAuthSessionToken()) {
     markNetworkKeyDirty(key);
+    networkSyncFailed = true;
+    networkSyncFailureMessage = 'Cloud sync paused: your teacher session expired. Log out and log back in to push your saved changes.';
     return false;
   }
   if (pendingNetworkWrites.has(key)) {
@@ -1690,14 +1712,39 @@ async function pushNetworkValue(key, value, options = {}) {
     if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
     return false;
   }
+  // Pre-flight body-size check. A single oversized PUT (e.g. all quizzes
+  // including base64 images) hits Vercel's 4.5 MB JSON limit and the server
+  // either drops the connection or returns 413. Without this check the user
+  // sees a generic "Saved locally, will upload" banner that never clears.
+  let body;
+  try { body = JSON.stringify({ value }); }
+  catch (err) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = `Could not serialize ${key} for upload: ${err && err.message ? err.message : 'unknown error'}`;
+    markNetworkKeyDirty(key);
+    return false;
+  }
+  if (body.length > NETWORK_SYNC_MAX_BODY_BYTES) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = `Cannot upload ${key}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit. Remove embedded images or split the data, then try again.`;
+    markNetworkKeyDirty(key);
+    console.error('Network sync skipped — payload too large for', key, body.length);
+    return false;
+  }
   pendingNetworkWrites.add(key);
   const writePromise = (async () => {
     try {
-      const res = await fetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
+      const res = await makeAbortableSyncFetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
         method: 'PUT',
         headers: withAuthHeader({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ value })
+        body
       });
+      if (res.status === 401) {
+        networkSyncFailed = true;
+        networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+        markNetworkKeyDirty(key);
+        return false;
+      }
       if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Failed to save shared state'));
       networkSyncReady = true;
       networkSyncFailed = false;
@@ -1712,7 +1759,10 @@ async function pushNetworkValue(key, value, options = {}) {
       return true;
     } catch (err) {
       networkSyncFailed = true;
-      networkSyncFailureMessage = explainNetworkSyncFailureMessage(err && err.message ? err.message : 'Failed to save shared state');
+      const reason = err && err.name === 'AbortError'
+        ? `Upload of ${key} timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s. The cloud server is slow or unreachable — try Force Sync Now in Settings.`
+        : (err && err.message ? err.message : 'Failed to save shared state');
+      networkSyncFailureMessage = explainNetworkSyncFailureMessage(reason);
       markNetworkKeyDirty(key);
       console.error('Network sync save failed for', key, err);
       if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
@@ -4868,8 +4918,10 @@ function renderSettingsView() {
         <label class="small" style="display:block;margin-top:12px">Sync server URL</label>
         <input id="syncApiBaseUrlInput" class="input-beautiful" value="${escapeHtml(NETWORK_SYNC_CONFIG.apiBaseUrl || '')}" placeholder="Leave blank for this same site, or enter https://example.com" />
         <div class="small" id="syncServerStatusText" style="margin-top:10px;line-height:1.7">Current target: <strong>${escapeHtml(getCurrentSyncServerLabel())}</strong><br/>Leave this blank only when this app and the API are opened from the same server address.</div>
+        <div class="small" id="syncPendingStatus" style="margin-top:10px;line-height:1.7"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           <button id="saveSyncServerBtn" class="btn btn-primary">Save Sync Server</button>
+          <button id="forceSyncNowBtn" class="btn btn-primary">Force Sync Now</button>
           <button id="testSyncServerBtn" class="btn btn-ghost">Test Connection</button>
           <button id="useThisSiteForSyncBtn" class="btn btn-ghost">Use This Site</button>
         </div>
@@ -5008,6 +5060,46 @@ function renderSettingsView() {
     const useThisSiteForSyncBtn = document.getElementById('useThisSiteForSyncBtn');
     if (useThisSiteForSyncBtn) useThisSiteForSyncBtn.onclick = async () => {
       await saveSyncServer('', { showNotification: true });
+    };
+    const syncPendingStatus = document.getElementById('syncPendingStatus');
+    const renderSyncPendingStatus = () => {
+      if (!syncPendingStatus) return;
+      const dirty = Array.from(dirtyNetworkKeys);
+      if (!dirty.length) {
+        syncPendingStatus.innerHTML = networkSyncReady && !networkSyncFailed
+          ? '<span style="color:#047857">All changes uploaded.</span>'
+          : '';
+        return;
+      }
+      const labels = dirty.map((key) => NETWORK_STATE_KEY_MAP[key] || key).join(', ');
+      syncPendingStatus.innerHTML = `<span style="color:#B45309"><strong>${dirty.length}</strong> change-set(s) waiting to upload: ${escapeHtml(labels)}.</span>`;
+    };
+    renderSyncPendingStatus();
+    const forceSyncNowBtn = document.getElementById('forceSyncNowBtn');
+    if (forceSyncNowBtn) forceSyncNowBtn.onclick = async () => {
+      forceSyncNowBtn.disabled = true;
+      const originalLabel = forceSyncNowBtn.textContent;
+      forceSyncNowBtn.textContent = 'Syncing…';
+      try {
+        // Mark every shared key dirty so even keys the app thinks are clean get
+        // re-pushed. Then flush in parallel and immediately pull so the user
+        // sees fresh state.
+        NETWORK_SYNC_KEYS.forEach(markNetworkKeyDirty);
+        const flushed = await flushPendingNetworkWrites([], { pullAfter: false });
+        const pulled = await pullNetworkState(true);
+        renderSyncPendingStatus();
+        renderSyncServerStatus();
+        if (flushed && pulled !== false) {
+          showNotification('Cloud sync completed', 'success', 6000);
+        } else {
+          showNotification(`Cloud sync had problems. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
+        }
+      } catch (err) {
+        showNotification(`Force sync failed: ${err && err.message ? err.message : 'unknown error'}`, 'error', 9000);
+      } finally {
+        forceSyncNowBtn.disabled = false;
+        forceSyncNowBtn.textContent = originalLabel;
+      }
     };
     document.getElementById('openNetworkGuide').onclick = () => showLocalNetworkGuide();
     const search = document.getElementById('teacherSearch');
