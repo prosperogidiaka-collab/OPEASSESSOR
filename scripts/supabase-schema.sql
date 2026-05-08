@@ -4,11 +4,13 @@ create table if not exists public.ope_quizzes (
   title text not null default '',
   created_at timestamptz,
   updated_at timestamptz,
+  synced_at timestamptz,
   payload jsonb not null default '{}'::jsonb
 );
 
 create index if not exists ope_quizzes_teacher_id_idx on public.ope_quizzes (teacher_id);
 create index if not exists ope_quizzes_updated_at_idx on public.ope_quizzes (updated_at);
+create index if not exists ope_quizzes_synced_at_idx on public.ope_quizzes (synced_at desc);
 
 create table if not exists public.ope_submissions (
   submission_id text primary key,

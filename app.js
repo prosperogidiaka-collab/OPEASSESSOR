@@ -1803,6 +1803,65 @@ async function syncSharedKeys(keys = []) {
   return flushPendingNetworkWrites(targetKeys, { pullAfter: true });
 }
 
+// Per-quiz cloud save. Writes a single row through /api/quizzes/<id> so a single
+// edited quiz never triggers a full /api/state/quizzes upload (which can blow
+// past Vercel's 4.5 MB JSON limit when quizzes embed images). The bulk path is
+// still the reconciler-of-last-resort and continues to run on the polling loop.
+async function pushSingleQuizToCloud(quiz) {
+  if (!quiz || !quiz.id) return false;
+  if (!canUseNetworkSync()) return false;
+  if (!getAuthSessionToken()) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = 'Cloud sync paused: log out and log back in to push your saved changes.';
+    return false;
+  }
+  let body;
+  try { body = JSON.stringify(quiz); }
+  catch (err) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = `Could not serialize quiz ${quiz.id} for upload: ${err && err.message ? err.message : 'unknown error'}`;
+    return false;
+  }
+  if (body.length > NETWORK_SYNC_MAX_BODY_BYTES) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = `Cannot upload quiz ${quiz.id}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit. Remove embedded images, then try again.`;
+    return false;
+  }
+  try {
+    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
+      method: 'PUT',
+      headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+      body
+    });
+    if (res.status === 401) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+      return false;
+    }
+    if (!res.ok) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = explainNetworkSyncFailureMessage(await readApiErrorMessage(res, 'Failed to save quiz'));
+      return false;
+    }
+    let payload = null;
+    try { payload = await res.json(); } catch (error) {}
+    networkSyncReady = true;
+    networkSyncFailed = false;
+    networkSyncFailureMessage = '';
+    const syncedAt = (payload && payload.syncedAt) || new Date().toISOString();
+    markQuizzesCloudSynced([quiz.id], syncedAt);
+    return true;
+  } catch (err) {
+    networkSyncFailed = true;
+    const reason = err && err.name === 'AbortError'
+      ? `Upload of quiz ${quiz.id} timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s. The cloud server is slow or unreachable.`
+      : (err && err.message ? err.message : 'Failed to save quiz');
+    networkSyncFailureMessage = explainNetworkSyncFailureMessage(reason);
+    console.error('Per-quiz sync failed for', quiz.id, err);
+    return false;
+  }
+}
+
 function encodeTextToBase64(value) {
   try {
     const bytes = new TextEncoder().encode((value || '').toString());
@@ -4813,11 +4872,13 @@ function showQuizSetDetails(quizId) {
       saveAllQuizzes(quizzes);
       const didRegrade = regradeSubmissionsForQuiz(updatedQuiz);
       if (state.currentQuiz && state.currentQuiz.id === updatedQuiz.id) state.currentQuiz = updatedQuiz;
+      const singleQuizOk = await pushSingleQuizToCloud(updatedQuiz);
       const sharedSyncOk = await syncSharedKeys([
-        STORAGE_KEYS.quizzes,
+        ...(singleQuizOk ? [] : [STORAGE_KEYS.quizzes]),
         ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
       ]);
-      if (sharedSyncOk) {
+      const quizCloudSaved = singleQuizOk || sharedSyncOk;
+      if (quizCloudSaved) {
         markQuizzesCloudSynced([updatedQuiz.id]);
         showNotification('Quiz content updated', 'success');
       } else {
@@ -11662,16 +11723,22 @@ function showCreateQuizModal(editQuizId = '') {
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
       if (audienceMode === 'class') selectedStudents.forEach((student) => upsertStudentForTeacher(quizOwnerId, { ...student, sourceQuizId: id }, id));
+      // Per-quiz upload first (small payload, never trips the 4.5 MB Vercel
+      // JSON limit). Fall back to the bulk quizzes flush if it fails so a
+      // transient single-quiz failure doesn't strand the user offline.
+      const singleQuizOk = await pushSingleQuizToCloud(qobj);
+      const fallbackKeys = singleQuizOk ? [] : [STORAGE_KEYS.quizzes];
       const sharedSyncOk = await syncSharedKeys([
-        STORAGE_KEYS.quizzes,
+        ...fallbackKeys,
         STORAGE_KEYS.students,
         ...((accessResult.mode === 'token' || accessResult.mode === 'unlimited') ? [STORAGE_KEYS.teachers, STORAGE_KEYS.tokenTransactions] : []),
         ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
       ]);
-      if (sharedSyncOk) {
+      const quizCloudSaved = singleQuizOk || sharedSyncOk;
+      if (quizCloudSaved) {
         markQuizzesCloudSynced([id]);
       }
-      if (sharedSyncOk) {
+      if (quizCloudSaved) {
         showNotification((editingQuiz ? 'Quiz updated' : 'Quiz saved') + '   ID: '+id,'success');
       } else {
         showNotification(`${editingQuiz ? 'Quiz updated' : 'Quiz saved'}   ID: ${id}. ${getSharedSyncWarningMessage()} Quiz IDs may not open on other devices yet.`, 'warning', 8000);

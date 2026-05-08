@@ -586,5 +586,6 @@ function createStateStore(options) {
 module.exports = {
   DEFAULT_STATE,
   VALID_STATE_KEYS,
-  createStateStore
+  createStateStore,
+  buildQuizRow
 };
