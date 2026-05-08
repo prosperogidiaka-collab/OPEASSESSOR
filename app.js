@@ -549,13 +549,7 @@ function hasStudentDeepLinkParams() {
 function applyPersistedAppUiState() {
   const stored = readLocalStorageValue(STORAGE_KEYS.appState);
   if (!stored || typeof stored !== 'object') return false;
-  // Never override the view from localStorage when the URL is a deep link
-  // (?q=, ?import=, ?r=, ?resultQuiz=). Otherwise a storage event from
-  // another tab can flip this tab to 'teacher' / 'home' between our render
-  // and the correction tab opening — which is exactly the "redirects to
-  // home page before opening the tab" symptom.
-  const hasDeepLinks = hasStudentDeepLinkParams();
-  const requestedView = !hasDeepLinks && stored.view && stored.view !== 'take' ? stored.view : state.view;
+  const requestedView = stored.view && stored.view !== 'take' ? stored.view : state.view;
   if (requestedView) state.view = requestedView;
   state.teacherGuideTopic = stored.teacherGuideTopic || '';
   if (stored.quizId) {
@@ -2035,15 +2029,6 @@ async function initializeApp() {
   migrateAndNormalizeSubmissions();
   startOverlayBodyLockObserver();
   const params = new URLSearchParams(window.location.search);
-  // Student WhatsApp/email correction link (?r=KEY&c=1). Open the correction
-  // view in a new tab on the very first synchronous step so the user never
-  // sees a loading card → home flash → tab cascade. If local cache already
-  // has the submission, the tab opens instantly. The async resolve flow
-  // below still runs as a fallback when cache is empty.
-  const isCorrectionLink = params.has('r')
-    && ['1', 'true', 'yes'].includes((params.get('c') || params.get('downloadCorrection') || '').toLowerCase());
-  let openedCorrectionImmediately = false;
-  if (isCorrectionLink) openedCorrectionImmediately = tryOpenCorrectionFromLinkSync(params);
   const querySyncApiBaseUrl = normalizeApiBaseUrl(params.get('syncApiBaseUrl') || params.get('apiBaseUrl') || '');
   if (querySyncApiBaseUrl) setNetworkSyncApiBaseUrl(querySyncApiBaseUrl);
   const startupSharedChanged = await hydrateSharedStateBeforeFirstRender(params);
@@ -2065,22 +2050,14 @@ async function initializeApp() {
     }
   }
   if (params.has('r') || (params.has('resultQuiz') && params.has('resultKey'))) {
-    if (openedCorrectionImmediately) {
-      // Correction tab is already open from the synchronous attempt above —
-      // strip the query string so the original tab boots cleanly into home
-      // (no loading card, no view flash). The user sees the new tab; this
-      // tab quietly settles on home behind it.
-      try { window.history.replaceState({}, '', window.location.pathname || '/'); } catch (e) {}
-    } else {
-      state.pendingResultLookup = {
-        shareKey: params.get('r') || '',
-        quizId: params.get('resultQuiz') || '',
-        submissionId: params.get('resultKey') || '',
-        downloadCorrection: ['1', 'true', 'yes'].includes(((params.get('c') || params.get('downloadCorrection') || '')).toLowerCase()),
-        correctionSubject: params.get('s') || params.get('correctionSubject') || ''
-      };
-      state.view = 'student.result';
-    }
+    state.pendingResultLookup = {
+      shareKey: params.get('r') || '',
+      quizId: params.get('resultQuiz') || '',
+      submissionId: params.get('resultKey') || '',
+      downloadCorrection: ['1', 'true', 'yes'].includes(((params.get('c') || params.get('downloadCorrection') || '')).toLowerCase()),
+      correctionSubject: params.get('s') || params.get('correctionSubject') || ''
+    };
+    state.view = 'student.result';
   }
   applySharedStateUiRefresh(startupSharedChanged, { suppressRender: true });
   render();
@@ -6659,44 +6636,6 @@ function readPrintPayload(type, id) {
   // through to shared-state lookup which is also fine.
   try { localStorage.removeItem(key); } catch (e) {}
   return payload;
-}
-
-// Open the student-correction view in a new tab on first paint when the
-// landing URL is a WhatsApp/email correction link. We resolve from local
-// cache only — no awaiting — because the goal is to bypass the loading-card
-// flash and the home view that briefly appears between renders. Returns
-// true if the new tab was opened and the calling code should skip the
-// pendingResultLookup landing flow.
-function tryOpenCorrectionFromLinkSync(params) {
-  try {
-    if (typeof window === 'undefined' || typeof window.open !== 'function') return false;
-    const shareKey = (params.get('r') || '').toString().trim().toLowerCase();
-    const explicitQuizId = (params.get('resultQuiz') || '').toString().trim();
-    const explicitSubmissionId = (params.get('resultKey') || '').toString().trim();
-    let submission = null;
-    if (shareKey) submission = findSubmissionByShareKey(shareKey);
-    if (!submission && explicitQuizId && explicitSubmissionId) {
-      submission = findSubmissionBySubmissionKey(explicitQuizId, explicitSubmissionId);
-    }
-    if (!submission) return false;
-    const quiz = getAllQuizzes()[submission.quizId];
-    if (!quiz) return false;
-    const subjectName = (params.get('s') || params.get('correctionSubject') || '').toString().trim();
-    const correctionView = buildCorrectionQuestionEntries(submission, { subjectName });
-    const innerHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
-      showNegativePenalty: true,
-      subjectName: correctionView.subjectName
-    });
-    const title = `Correction · ${submission.name || submission.email || 'Student'}${correctionView.subjectName ? ` · ${correctionView.subjectName}` : ''}`;
-    const opened = openPrintableDocumentInNewWindow(title, innerHtml);
-    if (opened) {
-      // Mark downloaded silently so teacher dashboards reflect it.
-      markCorrectionPdfDownloaded(submission).catch(() => {});
-    }
-    return opened;
-  } catch (e) {
-    return false;
-  }
 }
 
 function parsePrintRouteFromLocation() {
