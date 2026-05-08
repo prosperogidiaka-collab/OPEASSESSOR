@@ -357,7 +357,8 @@ const state = {
   resultLinkUi: null,
   teacherGuideTopic: '',
   classFilters: {},
-  pdfBootstrap: null
+  pdfBootstrap: null,
+  printRoute: null
 };
 let _didCompactSubmissions = false;
 let networkSyncReady = false;
@@ -1998,6 +1999,24 @@ async function initializeApp() {
     render();
     return;
   }
+  // Detect the user-facing print routes (/student-correction/:id and
+  // /facility-index/:id). These open a polished, A4-styled HTML page that the
+  // browser can print or save as PDF natively — no canvas/jsPDF involved, so
+  // there are no blank-page failures.
+  const printRoute = parsePrintRouteFromLocation();
+  if (printRoute) {
+    ensureSuperAdminAccount();
+    migrateAndNormalizeSubmissions();
+    state.printRoute = printRoute;
+    state.view = printRoute.type === 'facility-index' ? 'print.facility' : 'print.correction';
+    // Pull the latest shared state so the lookup can resolve even if this
+    // device hasn't seen the submission/quiz yet.
+    if (canUseNetworkSync()) {
+      try { await pullSharedStateSilently({ forcePull: true, timeoutMs: 6000 }); } catch (e) {}
+    }
+    render();
+    return;
+  }
   ensureSuperAdminAccount();
   migrateLegacyLocalTeacherPasswords();
   migrateAndNormalizeSubmissions();
@@ -3415,12 +3434,19 @@ function render() {
   const previousRenderedView = _lastRenderedView;
   if (previousRenderedView) captureViewScrollState(previousRenderedView);
   document.body.classList.toggle('pdf-route-active', state.view === 'pdf.render');
+  document.body.classList.toggle('print-route-active', state.view === 'print.correction' || state.view === 'print.facility');
   const app = document.getElementById('app');
   if (state.view === 'pdf.render') {
     app.innerHTML = '';
     app.appendChild(renderPdfExportView());
     _lastRenderedView = state.view;
     persistAppUiState();
+    return;
+  }
+  if (state.view === 'print.correction' || state.view === 'print.facility') {
+    app.innerHTML = '';
+    app.appendChild(renderPrintRouteView());
+    _lastRenderedView = state.view;
     return;
   }
   if (window.history && !_historyApplying && state.view !== _lastHistoryView) {
@@ -6432,6 +6458,31 @@ function getPublicAppBaseUrl() {
   return '/';
 }
 
+function parsePrintRouteFromLocation() {
+  if (typeof window === 'undefined' || !window.location) return null;
+  const pathname = (window.location.pathname || '').replace(/\/+$/, '');
+  const correctionMatch = pathname.match(/^\/student-correction\/([^/]+)$/);
+  if (correctionMatch) {
+    const params = new URLSearchParams(window.location.search || '');
+    return {
+      type: 'student-correction',
+      shareKey: decodeURIComponent(correctionMatch[1] || ''),
+      subject: (params.get('subject') || '').toString().trim(),
+      showNegativePenalty: params.get('showNegativePenalty') !== '0'
+    };
+  }
+  const facilityMatch = pathname.match(/^\/facility-index\/([^/]+)$/);
+  if (facilityMatch) {
+    const params = new URLSearchParams(window.location.search || '');
+    return {
+      type: 'facility-index',
+      quizId: decodeURIComponent(facilityMatch[1] || ''),
+      subject: (params.get('subject') || '').toString().trim() || 'General'
+    };
+  }
+  return null;
+}
+
 function parsePdfRoutePathOnClient(routePath = '') {
   try {
     const url = new URL((routePath || '').toString(), getPublicAppBaseUrl());
@@ -7393,33 +7444,28 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
 }
 
 function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
+  // Open a polished, print-ready HTML view in a new tab instead of generating
+  // a PDF in-browser. Students can read it directly or use the browser's
+  // "Print > Save as PDF" for a clean, properly-paginated PDF every time.
+  const shareKey = getSubmissionShareKey(submission);
+  if (!shareKey) {
+    showNotification('This submission cannot be opened yet — share key missing.', 'error');
+    return Promise.resolve(false);
+  }
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
   const resolvedSubjectName = correctionView.subjectName;
-  const filename = getStudentResultPdfFilename(
-    submission,
-    quiz.id || submission.quizId,
-    resolvedSubjectName ? `correction-${resolvedSubjectName}` : 'correction'
-  );
-  const successMessage = resolvedSubjectName ? `${resolvedSubjectName} correction PDF downloaded` : 'Correction PDF downloaded';
-  return downloadPagedPdfFromHtml(
-    buildCorrectionPdfDocumentHtml(submission, quiz, opts),
-    filename,
-    successMessage,
-    {
-      disableServerHtmlExport: true,
-      // Canvas snapshot path is more reliable than html2pdf's pagebreak engine
-      // and produces consistent A4-fitted pages with no blank-content failures.
-      preferCanvasSnapshot: true,
-      contentWidthMm: 190,
-      // 190mm at 96 DPI = 718px. Matching source-div CSS width (set in mm) to
-      // sandbox width (set in px) is what makes 1 CSS pt = 1 PDF pt and stops
-      // the canvas from leaving white space on the right of every page.
-      sourceWidthPx: 718,
-      renderScale: 2.4,
-      marginMm: 10,
-      orientation: 'p'
-    }
-  );
+  const params = new URLSearchParams();
+  if (resolvedSubjectName) params.set('subject', resolvedSubjectName);
+  if (opts.showNegativePenalty === false) params.set('showNegativePenalty', '0');
+  const url = `/student-correction/${encodeURIComponent(shareKey)}${params.toString() ? `?${params.toString()}` : ''}`;
+  const opened = window.open(url, '_blank', 'noopener');
+  if (!opened) {
+    // Popup blocker — fall back to same-tab navigation.
+    window.location.href = url;
+  } else {
+    showNotification('Correction view opened in a new tab. Use "Print > Save as PDF" for a copy.', 'success', 6000);
+  }
+  return Promise.resolve(true);
 }
 
 async function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) {
@@ -7698,25 +7744,24 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
 }
 
 function downloadFacilityIndexPdfText(quiz, data, options = {}) {
+  // Open the facility index in a new tab as a print-ready HTML view. Browser
+  // "Print > Save as PDF" produces the actual PDF without the blank-page
+  // failures we got from in-browser canvas rendering.
+  if (!quiz || !quiz.id) {
+    showNotification('Quiz information is missing — facility index cannot be opened.', 'error');
+    return Promise.resolve(false);
+  }
   const subjectName = (options.subjectName || '').toString().trim() || 'General';
-  const filename = `${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`;
-  const successMessage = Object.prototype.hasOwnProperty.call(options, 'successMessage') ? options.successMessage : 'Facility index PDF downloaded';
-  return downloadPagedPdfFromHtml(
-    buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
-    filename,
-    successMessage,
-    {
-      disableServerHtmlExport: true,
-      preferCanvasSnapshot: true,
-      contentWidthMm: 190,
-      // 718 = 190mm at 96 DPI — matches the source div so canvas fills the
-      // page from edge to edge with no left-cramming / right white margin.
-      sourceWidthPx: 718,
-      renderScale: 2.4,
-      marginMm: 10,
-      orientation: 'p'
-    }
-  );
+  const params = new URLSearchParams();
+  if (subjectName) params.set('subject', subjectName);
+  const url = `/facility-index/${encodeURIComponent(quiz.id)}${params.toString() ? `?${params.toString()}` : ''}`;
+  const opened = window.open(url, '_blank', 'noopener');
+  if (!opened) {
+    window.location.href = url;
+  } else if (options.successMessage !== '') {
+    showNotification('Facility index opened in a new tab. Use "Print > Save as PDF" for a copy.', 'success', 6000);
+  }
+  return Promise.resolve(true);
 }
 
 function getTeacherSummaryQuestionCount(quiz, submissions = []) {
@@ -9143,6 +9188,200 @@ function renderPdfExportView() {
   requestAnimationFrame(() => requestAnimationFrame(() => {
     window.__OPE_PDF_READY__ = true;
   }));
+  return wrapper;
+}
+
+function renderPrintRouteView() {
+  const route = state.printRoute || {};
+  const quizzes = getAllQuizzes();
+  let contentHtml = '';
+  let documentTitle = 'OPE Assessor';
+  let notFoundReason = '';
+
+  if (route.type === 'student-correction') {
+    const submission = findSubmissionByShareKey(route.shareKey || '');
+    const quiz = submission ? quizzes[submission.quizId] : null;
+    if (!submission) notFoundReason = 'No submission was found for this link. The student may not have submitted yet, or the link may be from a different teacher account.';
+    else if (!quiz) notFoundReason = 'The quiz this submission belongs to is no longer available on this device.';
+    else {
+      documentTitle = `Correction · ${submission.name || submission.email || 'Student'}`;
+      contentHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
+        showNegativePenalty: route.showNegativePenalty !== false,
+        subjectName: route.subject || ''
+      });
+    }
+  } else if (route.type === 'facility-index') {
+    const quiz = quizzes[route.quizId || ''];
+    if (!quiz) notFoundReason = 'This quiz could not be found on this device. Open it from a device where the quiz exists, or wait for shared sync to complete.';
+    else {
+      const allSubs = getAllSubmissions().filter((item) => item && item.quizId === quiz.id);
+      const facilityData = computeFacilityIndexFromQuizAndSubmissions(quiz, allSubs);
+      const subjectFilter = (route.subject || '').toString().trim();
+      const visibleData = subjectFilter && subjectFilter !== 'General'
+        ? facilityData.filter((item) => normalizeSubjectName(item.subject || 'General') === normalizeSubjectName(subjectFilter))
+        : facilityData;
+      documentTitle = `Facility Index · ${quiz.title || quiz.id}`;
+      contentHtml = buildFacilityIndexPdfDocumentHtml(quiz, visibleData, { subjectName: subjectFilter || 'General' });
+    }
+  } else {
+    notFoundReason = 'Unknown print route.';
+  }
+
+  if (typeof document !== 'undefined') document.title = documentTitle;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'print-route-shell';
+  wrapper.innerHTML = `
+    <style>
+      @page { size: A4 portrait; margin: 12mm 10mm; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #E5E7EB;
+        color: #0F172A;
+        font-family: "Inter","Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      body.print-route-active { background: #E5E7EB !important; }
+      body.print-route-active #app { background: transparent !important; min-height: 100vh; }
+      .print-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 22px;
+        background: #0F172A;
+        color: #ffffff;
+        box-shadow: 0 2px 6px rgba(15,23,42,0.18);
+      }
+      .print-toolbar-title {
+        font-size: 14pt;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        margin: 0;
+      }
+      .print-toolbar-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+      .print-toolbar button {
+        appearance: none;
+        border: 0;
+        cursor: pointer;
+        padding: 9px 18px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 13pt;
+        font-family: inherit;
+      }
+      .print-toolbar button.primary { background: #2F80ED; color: #ffffff; }
+      .print-toolbar button.primary:hover { background: #1D6FE0; }
+      .print-toolbar button.ghost { background: rgba(255,255,255,0.12); color: #ffffff; }
+      .print-toolbar button.ghost:hover { background: rgba(255,255,255,0.22); }
+      .print-page {
+        background: #ffffff;
+        width: 210mm;
+        min-height: 297mm;
+        margin: 16px auto 32px;
+        padding: 12mm 10mm;
+        box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+        color: #000000;
+        overflow: visible;
+        font-size: 16pt;
+        line-height: 1.6;
+        text-align: justify;
+        hyphens: auto;
+        -webkit-hyphens: auto;
+      }
+      .print-page * { box-sizing: border-box; }
+      .print-page img, .print-page svg, .print-page canvas { max-width: 100%; height: auto; }
+      .print-page table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+      .print-page th, .print-page td { word-wrap: break-word; overflow-wrap: break-word; }
+      .print-empty {
+        background: #FEF2F2;
+        border: 1px solid #FCA5A5;
+        border-radius: 14px;
+        padding: 22px;
+        color: #7F1D1D;
+        font-size: 14pt;
+      }
+      .print-empty h1 { margin: 0 0 8px; font-size: 18pt; color: #7F1D1D; }
+      .print-empty p { margin: 0; line-height: 1.55; }
+      .avoid-break,
+      .pdf-question-card,
+      .pdf-summary-card,
+      .pdf-meta-card,
+      .facility-question-card,
+      .facility-summary-card,
+      .facility-band-section,
+      .facility-band-heading {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .long-card { break-inside: auto; page-break-inside: auto; }
+
+      @media print {
+        @page { size: A4 portrait; margin: 12mm 10mm; }
+        html, body { background: #ffffff !important; }
+        body.print-route-active { background: #ffffff !important; }
+        .print-toolbar { display: none !important; }
+        #app { background: #ffffff !important; }
+        .print-page {
+          width: auto;
+          min-height: 0;
+          margin: 0;
+          padding: 0;
+          box-shadow: none;
+          font-size: 16pt;
+        }
+        .pdf-question-card,
+        .pdf-summary-card,
+        .pdf-meta-card,
+        .facility-question-card,
+        .facility-summary-card,
+        .facility-band-section,
+        .avoid-break {
+          break-inside: avoid;
+          page-break-inside: avoid;
+        }
+      }
+    </style>
+    <div class="print-toolbar" data-no-print="true">
+      <h1 class="print-toolbar-title">${escapeHtml(documentTitle)}</h1>
+      <div class="print-toolbar-actions">
+        <button class="primary" id="printRoutePrintBtn" type="button">Print / Save as PDF</button>
+        <button class="ghost" id="printRouteCloseBtn" type="button">Close</button>
+      </div>
+    </div>
+    <article class="print-page" id="printRouteContent">
+      ${contentHtml || `
+        <div class="print-empty">
+          <h1>This page is not ready yet</h1>
+          <p>${escapeHtml(notFoundReason || 'The requested record could not be opened.')}</p>
+        </div>
+      `}
+    </article>
+  `;
+
+  setTimeout(() => {
+    const printBtn = document.getElementById('printRoutePrintBtn');
+    if (printBtn) printBtn.onclick = () => { try { window.print(); } catch (e) {} };
+    const closeBtn = document.getElementById('printRouteCloseBtn');
+    if (closeBtn) closeBtn.onclick = () => {
+      // If this view was opened in a new tab, close it. Otherwise navigate home.
+      try { window.close(); } catch (e) {}
+      setTimeout(() => {
+        if (!window.closed) {
+          state.printRoute = null;
+          state.view = 'home';
+          window.history.replaceState({ view: 'home' }, '', '/');
+          render();
+        }
+      }, 60);
+    };
+  }, 0);
+
   return wrapper;
 }
 

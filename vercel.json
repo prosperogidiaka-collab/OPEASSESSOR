@@ -1,4 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": null
+  "framework": null,
+  "rewrites": [
+    { "source": "/student-correction/:id", "destination": "/index.html" },
+    { "source": "/student-correction/:id/", "destination": "/index.html" },
+    { "source": "/facility-index/:id", "destination": "/index.html" },
+    { "source": "/facility-index/:id/", "destination": "/index.html" }
+  ]
 }
