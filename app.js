@@ -1923,15 +1923,20 @@ async function syncSingleQuizWithCloud(quiz) {
   }
   const cloudQuiz = cloudPayload && cloudPayload.quiz && typeof cloudPayload.quiz === 'object' ? cloudPayload.quiz : null;
   const cloudSubs = Array.isArray(cloudPayload && cloudPayload.submissions) ? cloudPayload.submissions : [];
+  // Persist the merged cloud copy locally WITHOUT triggering save()'s bulk
+  // PUT to /api/state/quizzes or /api/state/submissions. The cloud was just
+  // updated by the per-quiz PUT above, so re-uploading the entire map/array
+  // is exactly the 12s-timeout / canceled-request pattern this flow exists
+  // to prevent.
   if (cloudQuiz) {
     const localQuizzes = getAllQuizzes();
     const merged = mergeRecordMapForSync(localQuizzes || {}, { [quiz.id]: cloudQuiz });
-    saveAllQuizzes(merged);
+    saveAllQuizzes(merged, { skipNetworkSync: true });
   }
   if (cloudSubs.length) {
     const localSubs = getAllSubmissions({ includeDeleted: true });
     const mergedSubs = mergeSubmissionListsForSync(localSubs || [], cloudSubs);
-    saveAllSubmissions(mergedSubs, { includeDeleted: true });
+    saveAllSubmissions(mergedSubs, { includeDeleted: true, skipNetworkSync: true });
   }
   markQuizzesCloudSynced([quiz.id]);
   return { ok: true, pulled: true, submissionCount: cloudSubs.length, message: `Quiz ${quiz.id} synced. ${cloudSubs.length} submission(s) on cloud.` };
@@ -2248,8 +2253,15 @@ async function initializeApp() {
   if (!networkSyncReady || networkSyncFailed) runSharedSyncCycle({ forcePull: true, forceRender: true });
 }
 
-function save(key, value) {
+function save(key, value, options = {}) {
   if (!writeLocalStorageValue(key, value)) return;
+  // skipNetworkSync is for paths that have already pushed to the cloud
+  // through a per-resource endpoint (e.g. the per-quiz Sync To Cloud flow
+  // PUTs through /api/quizzes/<id> and merges the cloud response back in).
+  // Without this flag, save() would also fire a bulk PUT to /api/state/<key>,
+  // re-uploading the whole map/array and recreating the 12s-timeout pattern
+  // the per-quiz endpoint exists to avoid.
+  if (options.skipNetworkSync) return;
   if (NETWORK_SYNC_KEYS.includes(key)) {
     markNetworkKeyDirty(key);
     pushNetworkValue(key, value);
@@ -2281,9 +2293,10 @@ function getAllTokenTransactions() { return load(STORAGE_KEYS.tokenTransactions)
 function getAllTeacherStudents() { return load(STORAGE_KEYS.students) || {}; }
 function saveAllQuizzes(q, options = {}) {
   const keepDeleted = options.keepDeleted !== false;
+  const saveOptions = options.skipNetworkSync ? { skipNetworkSync: true } : undefined;
   const nextVisible = (q && typeof q === 'object' && !Array.isArray(q)) ? { ...q } : {};
   if (!keepDeleted) {
-    save(STORAGE_KEYS.quizzes, nextVisible);
+    save(STORAGE_KEYS.quizzes, nextVisible, saveOptions);
     return;
   }
   const deletedRecords = {};
@@ -2291,15 +2304,16 @@ function saveAllQuizzes(q, options = {}) {
   Object.keys(stored).forEach((key) => {
     if (isDeletedQuiz(stored[key]) && !Object.prototype.hasOwnProperty.call(nextVisible, key)) deletedRecords[key] = stored[key];
   });
-  save(STORAGE_KEYS.quizzes, { ...deletedRecords, ...nextVisible });
+  save(STORAGE_KEYS.quizzes, { ...deletedRecords, ...nextVisible }, saveOptions);
 }
 function saveAllSubmissions(submissions, options = {}) {
   const keepDeleted = options.keepDeleted !== false;
+  const saveOptions = options.skipNetworkSync ? { skipNetworkSync: true } : undefined;
   const nextVisible = Array.isArray(submissions) ? submissions : [];
   const nextValue = keepDeleted
     ? mergeSubmissionRecordsForSync(nextVisible, getAllStoredSubmissions().filter(isDeletedSubmission))
     : mergeSubmissionRecordsForSync(nextVisible, []);
-  save(STORAGE_KEYS.submissions, nextValue);
+  save(STORAGE_KEYS.submissions, nextValue, saveOptions);
 }
 function saveAllTeachers(t) { save(STORAGE_KEYS.teachers, t); }
 function saveAllTokenTransactions(transactions) { save(STORAGE_KEYS.tokenTransactions, Array.isArray(transactions) ? transactions : []); }
@@ -4939,7 +4953,10 @@ function showQuizSetDetails(quizId) {
       };
       const quizzes = getAllQuizzes();
       quizzes[updatedQuiz.id] = updatedQuiz;
-      saveAllQuizzes(quizzes);
+      // Persist locally without firing save()'s bulk PUT to /api/state/quizzes —
+      // pushSingleQuizToCloud below pushes this one quiz through /api/quizzes/<id>
+      // and the syncSharedKeys fallback only fires if that per-quiz PUT failed.
+      saveAllQuizzes(quizzes, { skipNetworkSync: true });
       const didRegrade = regradeSubmissionsForQuiz(updatedQuiz);
       if (state.currentQuiz && state.currentQuiz.id === updatedQuiz.id) state.currentQuiz = updatedQuiz;
       const singleQuizOk = await pushSingleQuizToCloud(updatedQuiz);
@@ -11811,7 +11828,9 @@ function showCreateQuizModal(editQuizId = '') {
         showLicenseRequired();
         return;
       }
-      const quizzes = getAllQuizzes(); quizzes[id]=qobj; saveAllQuizzes(quizzes);
+      const quizzes = getAllQuizzes(); quizzes[id] = qobj;
+      // Local-only persist; pushSingleQuizToCloud below handles the cloud upload.
+      saveAllQuizzes(quizzes, { skipNetworkSync: true });
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
       if (audienceMode === 'class') selectedStudents.forEach((student) => upsertStudentForTeacher(quizOwnerId, { ...student, sourceQuizId: id }, id));
@@ -12781,7 +12800,11 @@ function markQuizzesCloudSynced(quizIds = [], syncedAt = new Date().toISOString(
     quizzes[quizId] = { ...quiz, cloudSyncedAt: syncedAt, updatedAt: quiz.updatedAt || syncedAt };
     changed = true;
   });
-  if (changed) saveAllQuizzes(quizzes);
+  // cloudSyncedAt is a per-device UI marker only — every caller of this
+  // function has already pushed the underlying quiz via /api/quizzes/<id>
+  // (or an explicit syncSharedKeys), so triggering save()'s bulk PUT to
+  // /api/state/quizzes here would just re-upload the entire map for nothing.
+  if (changed) saveAllQuizzes(quizzes, { skipNetworkSync: true });
 }
 
 async function endQuizNow(quizId) {
