@@ -400,6 +400,10 @@ let _calculatorExpression = '';
 
 function canUseNetworkSync() {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return false;
+  // Honour the 503/quota cooldown set by fetchWithRetry — while the backend
+  // is paused, nothing should attempt sync (polling, save() auto-push, the
+  // explicit Sync button all check this gate).
+  if (typeof isNetworkSyncPaused === 'function' && isNetworkSyncPaused()) return false;
   if (NETWORK_SYNC_CONFIG.apiBaseUrl) return /^https?:\/\//i.test(NETWORK_SYNC_CONFIG.apiBaseUrl);
   return /^https?:$/i.test(window.location.protocol || '');
 }
@@ -1668,6 +1672,74 @@ function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQU
   return fetchPromise;
 }
 
+// Service-paused cooldown. When Supabase / the backend returns 402/429/503,
+// hammering it with retries doesn't help — the project is throttled or paused.
+// We park ALL sync activity for 5 minutes (canUseNetworkSync() returns false
+// during the window, so polling, save() auto-push, and user-initiated fetches
+// all skip out fast). After the window expires the next user action is free to
+// try again; if the backend is still down the next 503 just re-arms the pause.
+const NETWORK_SYNC_PAUSE_DURATION_MS = 5 * 60 * 1000;
+const NETWORK_SYNC_RETRY_DELAY_MS = 20000;
+const NETWORK_SYNC_MAX_RETRIES = 4;
+let networkSyncPausedUntil = 0;
+
+function isNetworkSyncPaused() {
+  return networkSyncPausedUntil > Date.now();
+}
+
+function setNetworkSyncPaused(reason) {
+  const wasAlreadyPaused = isNetworkSyncPaused();
+  networkSyncPausedUntil = Date.now() + NETWORK_SYNC_PAUSE_DURATION_MS;
+  networkSyncFailed = true;
+  networkSyncFailureMessage = reason || 'Cloud sync is paused.';
+  if (!wasAlreadyPaused && typeof showNotification === 'function') {
+    const minutes = Math.round(NETWORK_SYNC_PAUSE_DURATION_MS / 60000);
+    showNotification(`${networkSyncFailureMessage} Sync will retry automatically in ${minutes} minute(s), or click to retry sooner.`, 'warning', 9000);
+  }
+}
+
+// Retry wrapper for user-initiated sync fetches (per-quiz Sync, quiz save,
+// student correction fetch). Background paths (save() auto-push, polling)
+// keep using makeAbortableSyncFetch directly — they fail fast and rely on
+// the cooldown to throttle. Behaviour:
+//   - Try 1 immediate, then up to NETWORK_SYNC_MAX_RETRIES retries with
+//     NETWORK_SYNC_RETRY_DELAY_MS between each.
+//   - 402/429/503 → throw immediately with a "paused" error AND set the
+//     cooldown so unrelated background paths stop hammering too.
+//   - Other non-OK responses or thrown network errors → retry.
+//   - AbortError (timeout) → don't retry (user moved on or the request
+//     genuinely timed out).
+async function fetchWithRetry(url, options = {}, attempt = 0) {
+  if (isNetworkSyncPaused()) {
+    const err = new Error('Cloud sync paused. Wait a few minutes, then try again.');
+    err.code = 'sync-paused';
+    throw err;
+  }
+  let res;
+  try {
+    res = await makeAbortableSyncFetch(url, options);
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw err;
+    if (attempt < NETWORK_SYNC_MAX_RETRIES) {
+      await new Promise((resolve) => setTimeout(resolve, NETWORK_SYNC_RETRY_DELAY_MS));
+      return fetchWithRetry(url, options, attempt + 1);
+    }
+    throw err;
+  }
+  if (res.status === 402 || res.status === 429 || res.status === 503) {
+    setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
+    const err = new Error('Cloud sync paused. Wait a few minutes, then try again.');
+    err.code = 'sync-paused';
+    err.status = res.status;
+    throw err;
+  }
+  if (!res.ok && attempt < NETWORK_SYNC_MAX_RETRIES) {
+    await new Promise((resolve) => setTimeout(resolve, NETWORK_SYNC_RETRY_DELAY_MS));
+    return fetchWithRetry(url, options, attempt + 1);
+  }
+  return res;
+}
+
 async function pullNetworkState(force = false) {
   if (!canUseNetworkSync()) return false;
   // The bulk read returns password hashes, student PII, and quiz answer
@@ -1681,6 +1753,13 @@ async function pullNetworkState(force = false) {
     headers: withAuthHeader({})
   })
     .then(async (res) => {
+      if (res.status === 402 || res.status === 429 || res.status === 503) {
+        // Backend paused — arm the cooldown so the 15s polling loop and any
+        // pending writes stop hammering. The next teacher action will surface
+        // the "paused" notification through fetchWithRetry.
+        setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
+        throw new Error('Cloud sync paused. Wait a few minutes, then try again.');
+      }
       if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Network sync unavailable'));
       const snapshot = await res.json();
       const changed = applyNetworkSnapshot(snapshot);
@@ -1757,6 +1836,14 @@ async function pushNetworkValue(key, value, options = {}) {
       if (res.status === 401) {
         networkSyncFailed = true;
         networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+        markNetworkKeyDirty(key);
+        return false;
+      }
+      if (res.status === 402 || res.status === 429 || res.status === 503) {
+        // Backend paused / quota exceeded — arm the cooldown so the polling
+        // loop and the rest of save()'s auto-pushes stop hammering for the
+        // next few minutes (see fetchWithRetry's setNetworkSyncPaused).
+        setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
         markNetworkKeyDirty(key);
         return false;
       }
@@ -1843,7 +1930,7 @@ async function pushSingleQuizToCloud(quiz) {
     return false;
   }
   try {
-    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
+    const res = await fetchWithRetry(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
       method: 'PUT',
       headers: withAuthHeader({ 'Content-Type': 'application/json' }),
       body
@@ -1868,9 +1955,14 @@ async function pushSingleQuizToCloud(quiz) {
     return true;
   } catch (err) {
     networkSyncFailed = true;
-    const reason = err && err.name === 'AbortError'
-      ? `Upload of quiz ${quiz.id} timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s. The cloud server is slow or unreachable.`
-      : (err && err.message ? err.message : 'Failed to save quiz');
+    let reason;
+    if (err && err.code === 'sync-paused') {
+      reason = err.message || 'Cloud sync paused.';
+    } else if (err && err.name === 'AbortError') {
+      reason = `Upload of quiz ${quiz.id} timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s. The cloud server is slow or unreachable.`;
+    } else {
+      reason = (err && err.message) ? err.message : 'Failed to save quiz';
+    }
     networkSyncFailureMessage = explainNetworkSyncFailureMessage(reason);
     console.error('Per-quiz sync failed for', quiz.id, err);
     return false;
@@ -1897,7 +1989,7 @@ async function syncSingleQuizWithCloud(quiz) {
   }
   let cloudPayload = null;
   try {
-    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
+    const res = await fetchWithRetry(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
       cache: 'no-store',
       headers: withAuthHeader({})
     });
@@ -1916,9 +2008,10 @@ async function syncSingleQuizWithCloud(quiz) {
     }
     cloudPayload = await res.json();
   } catch (err) {
-    const reason = err && err.name === 'AbortError'
-      ? `Cloud refresh timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s`
-      : (err && err.message ? err.message : 'unknown error');
+    let reason;
+    if (err && err.code === 'sync-paused') reason = err.message || 'Cloud sync paused';
+    else if (err && err.name === 'AbortError') reason = `Cloud refresh timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s`;
+    else reason = (err && err.message) ? err.message : 'unknown error';
     return { ok: true, pulled: false, message: `Quiz ${quiz.id} uploaded, but cloud refresh failed: ${reason}` };
   }
   const cloudQuiz = cloudPayload && cloudPayload.quiz && typeof cloudPayload.quiz === 'object' ? cloudPayload.quiz : null;
@@ -10221,7 +10314,7 @@ async function fetchRemoteCorrectionByShareKey(shareKey) {
   if (remoteCorrectionFailed.has(key)) return null;
   remoteCorrectionPending.add(key);
   try {
-    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/submissions/share/${encodeURIComponent(key)}`), {
+    const res = await fetchWithRetry(buildApiUrl(`/api/submissions/share/${encodeURIComponent(key)}`), {
       cache: 'no-store'
     });
     if (res.status === 404) {
