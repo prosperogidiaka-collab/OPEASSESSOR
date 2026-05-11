@@ -74,7 +74,20 @@ export function preflightResponse(request, env, options = {}) {
 }
 
 export async function readJsonBody(request) {
-  const text = await request.text();
+  // Honour Content-Encoding: gzip (clients gzip the body when sending big
+  // per-quiz payloads to cut egress). DecompressionStream is part of the Web
+  // Streams API and is available in the Workers runtime.
+  const encoding = ((request.headers && request.headers.get && request.headers.get('content-encoding')) || '').toLowerCase().trim();
+  let text;
+  if (encoding === 'gzip' && typeof DecompressionStream === 'function') {
+    const decompressed = request.body
+      ? request.body.pipeThrough(new DecompressionStream('gzip'))
+      : null;
+    if (!decompressed) return {};
+    text = await new Response(decompressed).text();
+  } else {
+    text = await request.text();
+  }
   if (!text || !text.trim()) return {};
   return JSON.parse(text);
 }

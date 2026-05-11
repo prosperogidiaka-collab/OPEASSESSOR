@@ -382,16 +382,37 @@ function decorateHtmlForSharing(req, htmlBuffer) {
 }
 
 function readRequestBody(req) {
+  // Read raw bytes (not a UTF-8 string) so a gzipped Content-Encoding payload
+  // round-trips intact through zlib. Cap raw bytes received at MAX_BODY_BYTES
+  // so a hostile / runaway client can't exhaust memory; cap the decompressed
+  // size at the same limit so a small zip-bomb doesn't unfold into GB.
   return new Promise((resolve, reject) => {
-    let data = '';
+    const chunks = [];
+    let received = 0;
     req.on('data', (chunk) => {
-      data += chunk;
-      if (Buffer.byteLength(data) > MAX_BODY_BYTES) {
+      received += chunk.length;
+      if (received > MAX_BODY_BYTES) {
         reject(new Error('Payload too large'));
         req.destroy();
+        return;
       }
+      chunks.push(chunk);
     });
-    req.on('end', () => resolve(data));
+    req.on('end', () => {
+      const buffer = Buffer.concat(chunks, received);
+      const encoding = ((req.headers && req.headers['content-encoding']) || '').toString().toLowerCase().trim();
+      if (encoding === 'gzip') {
+        try {
+          const zlib = require('zlib');
+          const decompressed = zlib.gunzipSync(buffer, { maxOutputLength: MAX_BODY_BYTES });
+          resolve(decompressed.toString('utf8'));
+        } catch (err) {
+          reject(new Error(`Failed to decompress gzip body: ${err.message || err}`));
+        }
+        return;
+      }
+      resolve(buffer.toString('utf8'));
+    });
     req.on('error', reject);
   });
 }

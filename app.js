@@ -1663,6 +1663,32 @@ const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 12000;
 // user instead of a generic 413 / connection reset.
 const NETWORK_SYNC_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
+// Gzip a JSON string with the browser's native CompressionStream so the
+// per-quiz PUT bodies (often 1–2 MB of JSON with embedded base64 images)
+// upload at ~30–60% of their wire size. Returns the original string on
+// browsers without CompressionStream (Safari < 16.4) so the call site can
+// always fall through to an uncompressed PUT.
+async function gzipBodyIfPossible(jsonText) {
+  if (typeof jsonText !== 'string' || !jsonText.length) {
+    return { body: jsonText, encoding: '' };
+  }
+  if (typeof window === 'undefined' || typeof window.CompressionStream !== 'function' || typeof Blob !== 'function' || typeof Response !== 'function') {
+    return { body: jsonText, encoding: '' };
+  }
+  try {
+    const stream = new Blob([jsonText]).stream().pipeThrough(new window.CompressionStream('gzip'));
+    const compressed = await new Response(stream).arrayBuffer();
+    // Skip the encoded body if it's somehow larger than the source — only
+    // happens on tiny payloads where the gzip header dominates.
+    if (compressed.byteLength >= jsonText.length) {
+      return { body: jsonText, encoding: '' };
+    }
+    return { body: compressed, encoding: 'gzip' };
+  } catch (err) {
+    return { body: jsonText, encoding: '' };
+  }
+}
+
 function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQUEST_TIMEOUT_MS) {
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), Math.max(2000, timeoutMs)) : null;
@@ -1951,10 +1977,13 @@ async function pushSingleQuizToCloud(quiz) {
     return false;
   }
   try {
+    const compressed = await gzipBodyIfPossible(body);
+    const headers = withAuthHeader({ 'Content-Type': 'application/json' });
+    if (compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
     const res = await fetchWithRetry(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
       method: 'PUT',
-      headers: withAuthHeader({ 'Content-Type': 'application/json' }),
-      body
+      headers,
+      body: compressed.body
     });
     if (res.status === 401) {
       networkSyncFailed = true;
@@ -2019,10 +2048,13 @@ async function pushSingleQuizSubmissionsToCloud(quizId, submissions) {
     return false;
   }
   try {
+    const compressed = await gzipBodyIfPossible(body);
+    const headers = withAuthHeader({ 'Content-Type': 'application/json' });
+    if (compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
     const res = await fetchWithRetry(buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`), {
       method: 'PUT',
-      headers: withAuthHeader({ 'Content-Type': 'application/json' }),
-      body
+      headers,
+      body: compressed.body
     });
     if (res.status === 401) {
       networkSyncFailed = true;
