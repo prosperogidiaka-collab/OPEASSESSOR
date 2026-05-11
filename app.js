@@ -1669,9 +1669,11 @@ function applyNetworkSnapshot(snapshot) {
   return changed;
 }
 
-// Hard cap on a single sync HTTP call so a stuck Vercel cold-start or a
-// silently-dropped TLS connection can't leave the queue blocked forever.
-const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 12000;
+// Hard cap on a single sync HTTP call so a stuck serverless cold-start or a
+// silently-dropped TLS connection can't hang forever. Generous enough for a
+// fat quiz upload (embedded images, gzipped) or a full /api/state pull over a
+// slow mobile connection — 12s was tripping the abort mid-upload.
+const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 30000;
 // Vercel's default JSON body limit is ~4.5 MB. Stay under it so a fat
 // `quizzes` payload (with embedded images etc.) returns a useful error to the
 // user instead of a generic 413 / connection reset.
@@ -1708,7 +1710,14 @@ function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQU
   const timer = controller ? setTimeout(() => controller.abort(), Math.max(2000, timeoutMs)) : null;
   const finalOptions = controller ? { ...options, signal: controller.signal } : options;
   const fetchPromise = fetch(url, finalOptions);
-  fetchPromise.finally(() => { if (timer) clearTimeout(timer); });
+  if (timer) {
+    // Clear the timeout when the fetch settles. Use a then() with BOTH handlers
+    // (success + failure) so this cleanup branch handles its own rejection — a
+    // bare .finally() here left a dangling rejected promise on abort, which
+    // surfaced as "Uncaught (in promise) AbortError". The real rejection is
+    // still delivered to the caller through the returned `fetchPromise`.
+    fetchPromise.then(() => clearTimeout(timer), () => clearTimeout(timer));
+  }
   return fetchPromise;
 }
 
