@@ -1801,6 +1801,18 @@ async function pushNetworkValue(key, value, options = {}) {
   if (stateKey === 'teachers' && !isSuperAdmin()) {
     return false;
   }
+  // Quizzes are exclusively per-quiz synced through /api/quizzes/<id> now.
+  // Bulk PUT /api/state/quizzes was uploading the entire quizzes map
+  // (1.5–2 MB with embedded images) on every save() auto-push, every poll
+  // cycle catch-up, every applyNetworkSnapshot drift push, and every Force
+  // Sync Now click — that was the 15GB-egress culprit. Treat the bulk PUT
+  // as a no-op so legacy callers don't fire it; clear the dirty flag so the
+  // polling loop doesn't keep re-scheduling. Anything that genuinely needs
+  // the cloud updated calls pushSingleQuizToCloud(quiz) explicitly.
+  if (stateKey === 'quizzes') {
+    clearNetworkKeyDirty(key);
+    return true;
+  }
   if (pendingNetworkWrites.has(key)) {
     markNetworkKeyDirty(key);
     if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
@@ -2238,13 +2250,14 @@ async function deleteQuizById(quizId, options = {}) {
     : `Delete "${quiz.title || quiz.id}" now? This cannot be undone.`;
   if (!confirmTeacherAction(message)) return false;
   const deletedAt = new Date().toISOString();
-  quizzes[quizId] = {
+  const tombstone = {
     ...quiz,
     deletedAt,
     deletedBy: state.teacherId || 'teacher',
     updatedAt: deletedAt
   };
-  saveAllQuizzes(quizzes);
+  quizzes[quizId] = tombstone;
+  saveAllQuizzes(quizzes, { skipNetworkSync: true });
 
   const submissions = getAllSubmissions({ includeDeleted: true });
   let changedSubmissions = false;
@@ -2258,10 +2271,14 @@ async function deleteQuizById(quizId, options = {}) {
   if (changedSubmissions) save(STORAGE_KEYS.submissions, submissions);
 
   if (state.currentQuiz && state.currentQuiz.id === quizId) state.currentQuiz = null;
-  const synced = await syncSharedKeys([
-    STORAGE_KEYS.quizzes,
-    ...(changedSubmissions ? [STORAGE_KEYS.submissions] : [])
-  ]);
+  // Per-quiz push the tombstone — bulk PUT /api/state/quizzes is now a no-op.
+  // The submissions tombstones still ride the bulk submissions PUT (no
+  // per-submission endpoint yet).
+  const quizPushed = await pushSingleQuizToCloud(tombstone);
+  const submissionsPushed = changedSubmissions
+    ? await syncSharedKeys([STORAGE_KEYS.submissions])
+    : true;
+  const synced = quizPushed && submissionsPushed;
   if (options.onDeleted) options.onDeleted();
   if (synced) {
     showNotification('Quiz deleted', 'success');
@@ -2495,10 +2512,21 @@ function updateTeacherProfileRecord(existingTeacherId, nextProfile = {}, options
 
   if (nextId !== oldId) {
     const quizzes = getAllStoredQuizzes();
+    const reassigned = [];
     Object.keys(quizzes).forEach((quizId) => {
-      if (normalizeEmail(quizzes[quizId]?.teacherId) === oldId) quizzes[quizId].teacherId = nextId;
+      if (normalizeEmail(quizzes[quizId]?.teacherId) === oldId) {
+        quizzes[quizId].teacherId = nextId;
+        reassigned.push(quizzes[quizId]);
+      }
     });
-    saveAllQuizzes(quizzes);
+    saveAllQuizzes(quizzes, { skipNetworkSync: true });
+    // Bulk PUT /api/state/quizzes is now a no-op; fan out per-quiz pushes for
+    // each reassigned quiz so the cloud's teacher_id catches up. Fire and
+    // forget — this admin flow is rare and a per-quiz Sync from the dashboard
+    // can repair anything that fails.
+    if (reassigned.length && typeof pushSingleQuizToCloud === 'function') {
+      Promise.all(reassigned.map((quiz) => pushSingleQuizToCloud(quiz).catch(() => false))).catch(() => {});
+    }
 
     const allStudents = getAllTeacherStudents();
     if (allStudents[oldId]) {
@@ -5327,16 +5355,33 @@ function renderSettingsView() {
       const originalLabel = forceSyncNowBtn.textContent;
       forceSyncNowBtn.textContent = 'Syncing…';
       try {
-        // Mark every shared key dirty so even keys the app thinks are clean get
-        // re-pushed. Then flush in parallel and immediately pull so the user
-        // sees fresh state.
-        NETWORK_SYNC_KEYS.forEach(markNetworkKeyDirty);
+        // Quizzes are excluded from the bulk flush — they sync exclusively
+        // through /api/quizzes/<id>. Fan them out one at a time below so a
+        // teacher with 100 quizzes pushes 100 small requests instead of one
+        // 1.7 MB blob to /api/state/quizzes.
+        NETWORK_SYNC_KEYS
+          .filter((key) => key !== STORAGE_KEYS.quizzes)
+          .forEach(markNetworkKeyDirty);
         const flushed = await flushPendingNetworkWrites([], { pullAfter: false });
+        const ownerId = normalizeEmail(state.teacherId);
+        const ownQuizzes = Object.values(getAllQuizzes() || {}).filter((quiz) => {
+          if (!quiz || !quiz.id) return false;
+          if (isSuperAdmin()) return true;
+          return normalizeEmail(quiz.teacherId) === ownerId;
+        });
+        let perQuizFailures = 0;
+        for (const quiz of ownQuizzes) {
+          if (isNetworkSyncPaused()) { perQuizFailures += 1; break; }
+          const ok = await pushSingleQuizToCloud(quiz);
+          if (!ok) perQuizFailures += 1;
+        }
         const pulled = await pullNetworkState(true);
         renderSyncPendingStatus();
         renderSyncServerStatus();
-        if (flushed && pulled !== false) {
-          showNotification('Cloud sync completed', 'success', 6000);
+        if (flushed && pulled !== false && perQuizFailures === 0) {
+          showNotification(`Cloud sync completed (${ownQuizzes.length} quiz${ownQuizzes.length === 1 ? '' : 'es'} pushed individually).`, 'success', 6000);
+        } else if (perQuizFailures > 0) {
+          showNotification(`${ownQuizzes.length - perQuizFailures} of ${ownQuizzes.length} quiz(es) synced. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         } else {
           showNotification(`Cloud sync had problems. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         }
@@ -13002,11 +13047,14 @@ async function endQuizNow(quizId) {
   }
   if (!confirmTeacherAction(`End "${quiz.title || quiz.id}" now? Students who have not started yet will no longer be able to open it.`)) return false;
   const now = new Date().toISOString();
-  quizzes[quizId] = { ...quiz, scheduleEnd: now, endedAt: now, updatedAt: now };
-  saveAllQuizzes(quizzes);
-  const synced = await syncSharedKeys([STORAGE_KEYS.quizzes]);
+  const updatedQuiz = { ...quiz, scheduleEnd: now, endedAt: now, updatedAt: now };
+  quizzes[quizId] = updatedQuiz;
+  saveAllQuizzes(quizzes, { skipNetworkSync: true });
+  // Per-quiz push — bulk PUT /api/state/quizzes is now a no-op so the bulk
+  // syncSharedKeys path no longer propagates the end-time change to the cloud.
+  const synced = await pushSingleQuizToCloud(updatedQuiz);
   if (synced) markQuizzesCloudSynced([quizId]);
-  if (state.currentQuiz && state.currentQuiz.id === quizId) state.currentQuiz = quizzes[quizId];
+  if (state.currentQuiz && state.currentQuiz.id === quizId) state.currentQuiz = updatedQuiz;
   showNotification(synced ? 'Test ended successfully' : `Test ended locally. ${getSharedSyncWarningMessage()}`, synced ? 'success' : 'warning', 7000);
   render();
   return true;
