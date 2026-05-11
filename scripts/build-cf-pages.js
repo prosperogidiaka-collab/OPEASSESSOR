@@ -30,7 +30,8 @@ const INCLUDE = [
   'ope-icon-192.png',
   'ope-icon-512.png',
   '_redirects',
-  '_routes.json'
+  '_routes.json',
+  '_headers'
 ];
 
 function rmDist() {

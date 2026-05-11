@@ -1,0 +1,25 @@
+# Cloudflare Pages response headers.
+#
+# This app ships its whole UI as app.js / index.html / style.css and updates
+# them often, and it has a service worker — so a sticky browser/edge cache here
+# is exactly what leaves users running stale code. Make everything revalidate.
+
+/*
+  Cache-Control: no-cache
+
+# The service worker file must NEVER be served from a stale cache, or the
+# browser keeps re-installing the same old worker. Force a full re-fetch.
+/service-worker.js
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+
+/index.html
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+
+/app.js
+  Cache-Control: no-cache, must-revalidate
+
+/config.js
+  Cache-Control: no-cache, must-revalidate
+
+/style.css
+  Cache-Control: no-cache, must-revalidate
