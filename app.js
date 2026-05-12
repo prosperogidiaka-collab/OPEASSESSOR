@@ -4356,15 +4356,14 @@ async function pullQuizSubmissionsFromCloud(quizId) {
       return false;
     }
     const payload = await res.json();
-    const cloudQuiz = payload && payload.quiz && typeof payload.quiz === 'object' ? payload.quiz : null;
-    if (cloudQuiz && cloudQuiz.id) {
-      const localQuizzes = getAllQuizzes({ includeDeleted: true });
-      saveAllQuizzes(mergeRecordMapForSync(localQuizzes || {}, { [cloudQuiz.id]: cloudQuiz }), { skipNetworkSync: true });
-    }
+    // We only want this quiz's SUBMISSIONS here — don't re-write the (image-
+    // heavy) quiz payload on every results-view open; it risks blowing the
+    // localStorage quota and the teacher already has the quiz locally anyway.
     if (Array.isArray(payload.submissions)) {
       const localSubs = getAllSubmissions({ includeDeleted: true });
-      saveAllSubmissions(mergeSubmissionListsForSync(localSubs || [], payload.submissions), { includeDeleted: true, skipNetworkSync: true });
-      console.log(`Pulled ${payload.submissions.length} submission(s) for quiz ${id} from cloud.`);
+      saveAllSubmissions(mergeSubmissionListsForSync(localSubs || [], payload.submissions), { skipNetworkSync: true });
+      const storedForQuiz = getAllSubmissions().filter((s) => s && String(s.quizId) === String(id)).length;
+      console.log(`Pulled ${payload.submissions.length} submission(s) for quiz ${id} from cloud; ${storedForQuiz} now stored locally for it.`);
     }
     return true;
   } catch (e) {
@@ -11504,10 +11503,17 @@ function renderResultsView() {
   // PREVIOUS view here (render() updates it after building the view), so this
   // fires once per navigation in and doesn't loop on the follow-up re-render.
   if (_lastRenderedView !== 'teacher.results' && _lastRenderedView !== 'results' && canUseNetworkSync() && getAuthSessionToken()) {
-    pullQuizSubmissionsFromCloud(q.id).then((ok) => { if (ok && state.view === 'teacher.results') render(); }).catch(() => {});
+    pullQuizSubmissionsFromCloud(q.id).then((ok) => {
+      // Re-render if we're still looking at this quiz's results — regardless of
+      // the exact view-name string ('results' vs 'teacher.results').
+      if (ok && state.currentQuiz && String(state.currentQuiz.id) === String(q.id)) render();
+    }).catch(() => {});
   }
   regradeSubmissionsForQuiz(q);
-  const submissions = getAllSubmissions().filter(s => s.quizId === q.id);
+  // String() both sides — a quiz id stored as a number somewhere shouldn't make
+  // its submissions invisible to a strict === against the string id.
+  const submissions = getAllSubmissions().filter(s => s && String(s.quizId) === String(q.id));
+  console.log(`Results view for quiz ${q.id}: ${submissions.length} submission(s) (of ${getAllSubmissions().length} stored).`);
   const totalMarks = getQuizTotalMarks(q);
   const avgScore = submissions.length > 0 ? Math.round(submissions.reduce((a,s) => a + (s.score || 0), 0) / submissions.length) : 0;
   const avgPercent = submissions.length > 0 ? Math.round(submissions.reduce((a,s) => a + (s.percent || 0), 0) / submissions.length) : 0;
@@ -11603,7 +11609,7 @@ function renderResultsView() {
       } catch (e) {}
       btnRefreshResults.disabled = false;
       btnRefreshResults.textContent = original;
-      if (state.view === 'teacher.results') render();
+      if (state.currentQuiz && String(state.currentQuiz.id) === String(q.id)) render();
     };
     const btnAnalysis = document.getElementById('btnExamAnalysis');
     if (btnAnalysis) btnAnalysis.onclick = () => showExamAnalysisModal(q);
