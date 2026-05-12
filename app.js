@@ -15,6 +15,11 @@ const ADMIN_CONTACT_EMAIL = SUPER_ADMIN_EMAIL;
 const STORAGE_KEYS = {
   quizzes: 'ope_quizzes_v2',
   submissions: 'ope_submissions_v2',
+  // Small, append-only queue of student submissions that haven't been confirmed
+  // saved to the cloud yet (POST /api/submissions). Drained on submit, on app
+  // load, and whenever the browser comes back online. NOT part of NETWORK_SYNC_KEYS
+  // — it's a local retry buffer, never itself synced.
+  submissionOutbox: 'ope_submission_outbox_v1',
   teacherId: 'ope_teacher_id',
   teachers: 'ope_teachers_v1',
   tokenTransactions: 'ope_token_transactions_v1',
@@ -369,6 +374,12 @@ const state = {
 };
 let _didCompactSubmissions = false;
 let _didReclaimOrphanQuizzes = false;
+let _didFlushSubmissionOutbox = false;
+// Session-only safety net for devices whose localStorage is too full to hold a
+// quiz's submissions: pullQuizSubmissionsFromCloud() parks that quiz's cloud
+// copy here (keyed by quizId) so the Results view still renders it. Empty in the
+// normal case, so getAllStoredSubmissions() does no extra work then.
+const _cloudSubmissionsFallback = new Map();
 let networkSyncReady = false;
 let networkSyncTimer = null;
 let networkSyncInFlight = null;
@@ -2659,7 +2670,15 @@ function getAllQuizzes(options = {}) {
     return visible;
   }, {});
 }
-function getAllStoredSubmissions() { return load(STORAGE_KEYS.submissions) || []; }
+function getAllStoredSubmissions() {
+  const stored = load(STORAGE_KEYS.submissions) || [];
+  if (_cloudSubmissionsFallback.size === 0) return stored;
+  let overlay = [];
+  _cloudSubmissionsFallback.forEach((list) => { if (Array.isArray(list) && list.length) overlay = overlay.concat(list); });
+  if (!overlay.length) return stored;
+  // Overlay (the fresh cloud copy) wins over the stale local rows of the same id.
+  return mergeSubmissionRecordsForSync(overlay, Array.isArray(stored) ? stored : []);
+}
 function getAllSubmissions(options = {}) {
   const includeDeleted = !!options.includeDeleted;
   const submissions = getAllStoredSubmissions();
@@ -2690,8 +2709,12 @@ function saveAllQuizzes(q, options = {}) {
 // and (b) is far too big to upload, so the teacher never sees it. The images
 // belong to the quiz, not the submission — the correction view already re-merges
 // live question content (incl. mediaAssets) from the quiz by _sourceId — so we
-// strip them here. Idempotent; returns the same reference when there's nothing
-// to strip.
+// strip them here. We also drop the base64 webcam proctoring frame
+// (snapshots[].data): nothing in the app ever renders it, yet dozens of them
+// (a JPEG every ~30s, several per submission) are by far the heaviest thing in
+// a quiz's submissions and are exactly what overflowed the 5 MB localStorage
+// quota in the field. Only the frame timestamps (snapshots[].at) are kept.
+// Idempotent; returns the same reference when there's nothing to strip.
 function slimSubmissionForStorage(submission) {
   if (!submission || typeof submission !== 'object') return submission;
   let changed = false;
@@ -2705,9 +2728,14 @@ function slimSubmissionForStorage(submission) {
   let snapshots = submission.snapshots;
   if (Array.isArray(snapshots)) {
     snapshots = snapshots.map((snap) => {
-      if (!snap || typeof snap !== 'object' || !snap.question) return snap;
-      const slimQ = stripQuestion(snap.question);
-      return slimQ === snap.question ? snap : { ...snap, question: slimQ };
+      if (!snap || typeof snap !== 'object') return snap;
+      let next = snap;
+      if (next.data) { changed = true; next = { ...next }; delete next.data; }
+      if (next.question) {
+        const slimQ = stripQuestion(next.question);
+        if (slimQ !== next.question) next = { ...next, question: slimQ };
+      }
+      return next;
     });
   }
   if (!changed) return submission;
@@ -2724,12 +2752,13 @@ function slimSubmissionListForStorage(list) {
   return changed ? out : list;
 }
 
-// Webcam proctoring frames (snapshots[].data — a base64 JPEG every interval)
-// are by far the heaviest thing in a submission. With dozens of submissions
-// they alone can exceed the browser's localStorage quota. They're part of the
-// payload that's pushed to the cloud, so dropping them LOCALLY is lossless —
-// the frames re-arrive when that submission is pulled again. `keepFramesFor`
-// (a quizId) keeps frames for the quiz currently being looked at.
+// Defence in depth against legacy data: webcam proctoring frames
+// (snapshots[].data — a base64 JPEG) are no longer captured or persisted
+// (slimSubmissionForStorage strips them, startWebcam stores timestamps only),
+// but a device may still hold old submissions that carry them, and they're by
+// far the heaviest thing in a submission. This drops them as a quota fallback.
+// `keepFramesFor` is retained for call-site compatibility; in practice slim has
+// already removed every frame before this runs.
 function dropSubmissionWebcamFrames(list, keepFramesFor = null) {
   return (Array.isArray(list) ? list : []).map((s) => {
     if (!s || typeof s !== 'object' || !Array.isArray(s.snapshots) || !s.snapshots.length) return s;
@@ -2780,6 +2809,86 @@ function saveAllSubmissions(submissions, options = {}) {
 function saveAllTeachers(t) { save(STORAGE_KEYS.teachers, t); }
 function saveAllTokenTransactions(transactions) { save(STORAGE_KEYS.tokenTransactions, Array.isArray(transactions) ? transactions : []); }
 function saveAllTeacherStudents(s) { save(STORAGE_KEYS.students, s); }
+
+// ---- Per-submission cloud upload + offline outbox -------------------------
+// A finished submission lives in three places until it's safely on the cloud:
+//   1. localStorage[submissions] — so this device's hasSubmittedBefore() / the
+//      instant-result modal / offline use still work.
+//   2. localStorage[submissionOutbox] — the retry buffer below.
+//   3. POST /api/submissions — the canonical write. On 200 we drop it from (2).
+// The outbox is what makes a submit survive a network blip without the student
+// having to do anything: it's drained again on the next app load / `online`.
+function getSubmissionOutbox() {
+  const list = load(STORAGE_KEYS.submissionOutbox);
+  return Array.isArray(list) ? list.filter((s) => s && typeof s === 'object') : [];
+}
+function setSubmissionOutbox(list) {
+  try { localStorage[STORAGE_KEYS.submissionOutbox] = JSON.stringify(Array.isArray(list) ? list : []); return true; }
+  catch (e) { console.warn('Could not write submission outbox:', e && e.message ? e.message : e); return false; }
+}
+function submissionOutboxKey(sub) {
+  if (!sub || typeof sub !== 'object') return '';
+  return (sub.submissionId || `${sub.quizId || ''}::${normalizeEmail(sub.email || '')}::${sub.submittedAt || ''}`).toString();
+}
+function enqueueSubmissionToOutbox(sub) {
+  if (!sub || typeof sub !== 'object' || !sub.quizId) return;
+  const slim = slimSubmissionForStorage(sub);
+  const key = submissionOutboxKey(slim);
+  const next = getSubmissionOutbox().filter((item) => submissionOutboxKey(item) !== key);
+  next.push(slim);
+  // Bound it — the outbox should normally be empty/near-empty; if uploads keep
+  // failing, cap to the most recent so a kiosk device can't accumulate forever.
+  setSubmissionOutbox(next.slice(-50));
+}
+function dequeueSubmissionFromOutbox(sub) {
+  const key = submissionOutboxKey(sub);
+  if (!key) return;
+  setSubmissionOutbox(getSubmissionOutbox().filter((item) => submissionOutboxKey(item) !== key));
+}
+
+// POST one submission to the cloud. Resolves true on a confirmed save, false on
+// any failure (the caller leaves it in the outbox to retry later). One attempt
+// plus one short retry — same philosophy as the other automatic student paths.
+async function submitOneSubmissionToCloud(sub) {
+  if (!sub || typeof sub !== 'object' || !sub.quizId) return false;
+  if (!canUseNetworkSync()) return false;
+  try {
+    const res = await autoSyncFetch(buildApiUrl('/api/submissions'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ submission: slimSubmissionForStorage(sub) })
+    });
+    if (res && res.ok) return true;
+    console.warn('POST /api/submissions failed —', res ? `HTTP ${res.status}` : 'no response');
+    return false;
+  } catch (e) {
+    console.warn('POST /api/submissions errored:', e && e.message ? e.message : e);
+    return false;
+  }
+}
+
+let _flushingSubmissionOutbox = false;
+// Drain the outbox: try each queued submission, drop the ones that land. Safe to
+// call often — it no-ops if already running, if offline, or if the queue is empty.
+async function flushSubmissionOutbox() {
+  if (_flushingSubmissionOutbox) return;
+  const queue = getSubmissionOutbox();
+  if (!queue.length || !canUseNetworkSync()) return;
+  _flushingSubmissionOutbox = true;
+  try {
+    for (const sub of queue) {
+      const ok = await submitOneSubmissionToCloud(sub);
+      if (ok) dequeueSubmissionFromOutbox(sub);
+    }
+  } finally {
+    _flushingSubmissionOutbox = false;
+  }
+}
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  // The one place we DO listen for `online`: a retry buffer is exactly what that
+  // event is for, and it never triggers a heavy pull — just re-POSTs tiny rows.
+  window.addEventListener('online', () => { flushSubmissionOutbox().catch(() => {}); });
+}
 
 function compactStoredSubmissions() {
   const submissions = getAllSubmissions({ includeDeleted: true });
@@ -4420,16 +4529,24 @@ async function pullQuizSubmissionsFromCloud(quizId) {
     const liveForQuiz = forQuiz.filter((s) => !isDeletedSubmission(s));
     console.log(`Quiz ${id}: after merge — ${liveForQuiz.length} live / ${forQuiz.length} total for this quiz, ${merged.length} submissions overall.`);
     const slimmed = slimSubmissionListForStorage(merged);
-    // keepFramesFor: id → keep webcam frames for the quiz being looked at, shed
-    // the rest if localStorage is full (the cloud keeps them all).
+    const slimmedForQuiz = slimmed.filter((s) => s && String(s.quizId) === String(id));
     const wrote = writeSubmissionsToStorage(slimmed, id);
-    if (!wrote) {
-      console.error(`Quiz ${id}: could not write submissions to localStorage (${merged.length} submissions). They stay on the cloud; clear old browsing data or use a less-full browser.`);
-      return false;
+    if (wrote) {
+      // localStorage now holds the canonical copy for this quiz; drop any
+      // in-memory fallback we may have been keeping for it.
+      _cloudSubmissionsFallback.delete(String(id));
+      clearNetworkKeyDirty(STORAGE_KEYS.submissions);
+      const storedForQuiz = getAllSubmissions().filter((s) => s && String(s.quizId) === String(id)).length;
+      console.log(`Pulled ${payload.submissions.length} submission(s) for quiz ${id} from cloud; ${storedForQuiz} now stored locally for it.`);
+    } else {
+      // Even after shedding webcam frames the device couldn't hold the full
+      // submissions array. Keep THIS quiz's submissions in memory for the rest
+      // of the session so the Results view still renders them (it reads through
+      // getAllStoredSubmissions, which overlays this map). The cloud keeps the
+      // canonical record — nothing is lost.
+      _cloudSubmissionsFallback.set(String(id), slimmedForQuiz);
+      console.error(`Quiz ${id}: localStorage is full — showing this quiz's ${slimmedForQuiz.length} submission(s) straight from the cloud without persisting them. Ask the teacher to clear old browsing data.`);
     }
-    clearNetworkKeyDirty(STORAGE_KEYS.submissions);
-    const storedForQuiz = getAllSubmissions().filter((s) => s && String(s.quizId) === String(id)).length;
-    console.log(`Pulled ${payload.submissions.length} submission(s) for quiz ${id} from cloud; ${storedForQuiz} now stored locally for it.`);
     return true;
   } catch (e) {
     console.warn('Quiz/submissions pull errored for', id, ':', e && e.message ? e.message : e);
@@ -4478,6 +4595,10 @@ function render() {
   if (!_didCompactSubmissions) {
     compactStoredSubmissions();
     _didCompactSubmissions = true;
+  }
+  if (!_didFlushSubmissionOutbox) {
+    _didFlushSubmissionOutbox = true;
+    flushSubmissionOutbox().catch(() => {});
   }
   if (!_didReclaimOrphanQuizzes && normalizeEmail(state.teacherId || getTeacherId())) {
     reclaimOrphanLocalQuizzes();
@@ -13232,8 +13353,9 @@ document.addEventListener('visibilitychange', ()=>{
 
 // =================== Submission Locking & Ranking ===================
 function hasSubmittedBefore(quizId, email) {
-  const subs = getAllSubmissions().filter(s=>s.quizId===quizId);
-  return subs.some(s => normalizeEmail(s.email) === normalizeEmail(email));
+  const target = normalizeEmail(email);
+  const hit = (s) => s && s.quizId === quizId && normalizeEmail(s.email) === target;
+  return getAllSubmissions().some(hit) || getSubmissionOutbox().some(hit);
 }
 
 function getAttemptCount(quizId, email) {
@@ -14582,17 +14704,19 @@ function startWebcam() {
       } else {
         const v = feed.querySelector('video'); if (v) v.srcObject = stream;
       }
-      // take random snapshots occasionally
+      // Record that the camera was live, at random intervals — timestamps only.
+      // We deliberately do NOT keep the captured frame (a base64 JPEG): nothing
+      // in the app renders it, and a handful of them per submission is what blew
+      // past the browser's 5 MB localStorage quota and made results vanish. If a
+      // proctoring-review UI is ever built, frames should be uploaded to object
+      // storage, not embedded in the submission JSON.
       if (state.currentSubmission) {
         state.currentSubmission._snapshotInterval = setInterval(()=>{
           try {
             const v = document.querySelector('#webcamFeed video');
             if (!v) return;
-            const c = document.createElement('canvas'); c.width = v.videoWidth || 320; c.height = v.videoHeight || 240; c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-            const data = c.toDataURL('image/jpeg', 0.4);
             state.currentSubmission.snapshots = state.currentSubmission.snapshots || [];
-            state.currentSubmission.snapshots.push({ at: new Date().toISOString(), data });
-            // Keep storage bounded to avoid UI freezes from very large localStorage writes.
+            state.currentSubmission.snapshots.push({ at: new Date().toISOString() });
             if (state.currentSubmission.snapshots.length > 6) state.currentSubmission.snapshots = state.currentSubmission.snapshots.slice(-6);
           } catch(e){}
         }, 1000 * (25 + Math.floor(Math.random()*50)));
@@ -14650,7 +14774,13 @@ async function collectAndSubmit() {
     sub.submittedAt = new Date().toISOString();
     sub.submissionId = buildSubmissionIdentity(sub);
     sub.shareKey = getSubmissionShareKey(sub, { persist: false });
-    const allSubs = getAllSubmissions(); allSubs.push(sub); saveAllSubmissions(allSubs);
+    const allSubs = getAllSubmissions(); allSubs.push(sub);
+    // Keep a local copy (hasSubmittedBefore / instant-result modal / offline use)
+    // but DON'T fire the whole-array PUT /api/state/submissions — the cloud copy
+    // goes up per-submission via the outbox, which also retries if the POST fails.
+    saveAllSubmissions(allSubs, { skipNetworkSync: true });
+    enqueueSubmissionToOutbox(sub);
+    flushSubmissionOutbox().catch(() => {});
     clearExamDraft(sub.quizId, sub.email);
     showNotification('Submission saved  ','success');
     // cleanup proctoring

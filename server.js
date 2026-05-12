@@ -1447,6 +1447,35 @@ async function handleApi(req, res) {
     return sendJson(req, res, 405, { error: 'Method not allowed' });
   }
 
+  // ---- Append one submission ----------------------------------------------
+  // Mirrors functions/api/submissions/index.js for the Node dev path. Public
+  // and code-gated: a student taking the quiz has no session, so the quiz id is
+  // the access token. The quiz must already exist; the state-store merges
+  // submissions by submissionId, so this never clobbers other quizzes' data.
+  if (route === '/api/submissions') {
+    if (req.method !== 'POST') return sendJson(req, res, 405, { error: 'Method not allowed' });
+    try {
+      const body = await readRequestBody(req);
+      const parsedBody = JSON.parse(body || '{}');
+      const submission = parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody) && parsedBody.submission && typeof parsedBody.submission === 'object' && !Array.isArray(parsedBody.submission)
+        ? parsedBody.submission
+        : parsedBody;
+      if (!submission || typeof submission !== 'object' || Array.isArray(submission)) {
+        return sendJson(req, res, 400, { error: 'Body must be a submission object (or { submission })' });
+      }
+      const quizId = (submission.quizId || '').toString().trim();
+      if (!quizId) return sendJson(req, res, 400, { error: 'Submission is missing quizId' });
+      const quizzes = (await stateStore.getStateValue('quizzes', buildAdminScope())) || {};
+      if (!quizzes[quizId]) return sendJson(req, res, 404, { error: 'Quiz not found' });
+      await stateStore.putStateValue('submissions', [{ ...submission, quizId }]);
+      return sendJson(req, res, 200, { ok: true, quizId, submissionId: submission.submissionId || '' });
+    } catch (error) {
+      const message = error.message || 'Invalid request body';
+      const isBodyError = message === 'Payload too large' || /JSON/i.test(message);
+      return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
+    }
+  }
+
   // ---- Public share-key correction lookup ---------------------------------
   // No auth: the shareKey is the access token. Used by the student-correction
   // route in the SPA so a student opening the link from WhatsApp / email on a
