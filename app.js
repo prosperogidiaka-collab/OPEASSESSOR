@@ -390,6 +390,9 @@ const pendingNetworkWritePromises = new Map();
 const dirtyNetworkKeys = new Set();
 let networkSyncRetryTimer = null;
 let networkSyncEventsBound = false;
+const STORAGE_QUOTA_NOTICE_COOLDOWN_MS = 30000;
+let lastStorageQuotaNoticeAt = 0;
+let skipAppStateStorageWritesForSession = false;
 let lastNetworkPullAt = 0;
 // Sync is strictly manual now. `userInitiatedSync` is true only for the
 // duration of a click on a Sync button, so error toasts/banners surface ONLY
@@ -413,6 +416,7 @@ let _lastTeacherNavPullAt = 0;
 let _resultsPulledForQuizId = '';
 let _pendingScrollRestore = null;
 let _overlayBodyLockObserver = null;
+const QUIZ_SHARE_PREVIEW_VERSION = '20260516-social';
 
 function getPdfBootstrapPayload() {
   if (typeof window === 'undefined') return null;
@@ -454,6 +458,21 @@ function schedulePendingNetworkFlush() {
   if (networkSyncRetryTimer) { clearTimeout(networkSyncRetryTimer); networkSyncRetryTimer = null; }
 }
 
+function isQuotaExceededError(error) {
+  if (!error) return false;
+  const name = (error.name || '').toString().trim();
+  const message = (error.message || '').toString().trim();
+  const code = Number(error.code || 0);
+  return name === 'QuotaExceededError' || code === 22 || /quota/i.test(message);
+}
+
+function notifyStorageQuotaExceeded() {
+  const now = Date.now();
+  if ((now - lastStorageQuotaNoticeAt) < STORAGE_QUOTA_NOTICE_COOLDOWN_MS) return;
+  lastStorageQuotaNoticeAt = now;
+  showNotification('This device is low on storage — some data could not be saved. Clear old browsing data or use a different browser.', 'error', 9000);
+}
+
 async function flushPendingNetworkWrites(keys = [], options = {}) {
   if (!canUseNetworkSync()) return false;
   const explicitKeys = resolveNetworkSyncKeys(keys);
@@ -477,8 +496,16 @@ async function flushPendingNetworkWrites(keys = [], options = {}) {
 }
 
 function writeLocalStorageValue(key, value) {
+  if (key === STORAGE_KEYS.appState && skipAppStateStorageWritesForSession) return false;
   try { localStorage[key] = JSON.stringify(value); return true; }
-  catch(e) { showNotification('Storage quota exceeded', 'error'); return false; }
+  catch(e) {
+    if (key === STORAGE_KEYS.appState && isQuotaExceededError(e)) {
+      skipAppStateStorageWritesForSession = true;
+      return false;
+    }
+    if (isQuotaExceededError(e)) notifyStorageQuotaExceeded();
+    return false;
+  }
 }
 
 function readLocalStorageValue(key) {
@@ -4274,10 +4301,11 @@ function countAnsweredQuestionsInSection(section, answers = {}) {
 function encodeQuizToLink(q, options = {}) {
   const base = window.location.href.split('?')[0];
   if (!q || !q.id) return base;
+  const shareParam = `share=${encodeURIComponent(QUIZ_SHARE_PREVIEW_VERSION)}`;
   if (options.portable) {
-    return `${base}?q=${encodeURIComponent(q.id)}&import=${encodeQuizToPortablePayload(q)}`;
+    return `${base}?q=${encodeURIComponent(q.id)}&${shareParam}&import=${encodeQuizToPortablePayload(q)}`;
   }
-  return `${base}?q=${encodeURIComponent(q.id)}`;
+  return `${base}?q=${encodeURIComponent(q.id)}&${shareParam}`;
 }
 
 function parseQuizAccessInput(value) {
