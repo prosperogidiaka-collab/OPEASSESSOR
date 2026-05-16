@@ -10,7 +10,15 @@ const { pathToFileURL } = require('url');
 const puppeteer = require('puppeteer-core');
 const qrcodeGenerator = require('qrcode-generator');
 
-const { VALID_STATE_KEYS, createStateStore, buildAdminScope, buildTeacherScope } = require('./state-store');
+const {
+  ADMIN_TEMPLATE_OWNER,
+  buildLegacyAdminTemplateTargetId,
+  isLegacyAdminTemplateSourceQuiz,
+  VALID_STATE_KEYS,
+  createStateStore,
+  buildAdminScope,
+  buildTeacherScope
+} = require('./state-store');
 const { buildDedicatedPdfRouteDocument, isDedicatedPdfRouteType } = require('./pdf-templates');
 
 const HOST = process.env.HOST || '0.0.0.0';
@@ -236,6 +244,49 @@ async function migrateLegacyPasswordsAtStartup() {
   }
 }
 
+function buildLegacyAdminTemplateQuizCopy(sourceQuiz, targetQuizId) {
+  const now = new Date().toISOString();
+  return {
+    ...sourceQuiz,
+    id: targetQuizId,
+    teacherId: ADMIN_TEMPLATE_OWNER,
+    isAdminTemplate: true,
+    templateVisibility: 'all_teachers',
+    sourceTeacherId: (sourceQuiz && sourceQuiz.teacherId ? sourceQuiz.teacherId : '').toString().trim().toLowerCase(),
+    sourceQuizId: (sourceQuiz && sourceQuiz.id) || '',
+    copiedToAdminAt: now,
+    updatedAt: now,
+    cloudSyncedAt: now,
+    createdAt: sourceQuiz?.createdAt || now
+  };
+}
+
+async function ensureLegacyAdminTemplateQuizCopiesAtStartup() {
+  let quizzes;
+  try {
+    quizzes = await stateStore.getStateValue('quizzes', buildAdminScope());
+  } catch (error) {
+    console.warn('[Admin Templates] Skipped quiz-template migration - failed to read quizzes state:', error.message || error);
+    return;
+  }
+  if (!quizzes || typeof quizzes !== 'object') return;
+  const pendingCopies = {};
+  Object.keys(quizzes).forEach((quizId) => {
+    const sourceQuiz = quizzes[quizId];
+    if (!isLegacyAdminTemplateSourceQuiz(sourceQuiz)) return;
+    const targetQuizId = buildLegacyAdminTemplateTargetId(sourceQuiz.id || quizId);
+    if (!targetQuizId || quizzes[targetQuizId] || pendingCopies[targetQuizId]) return;
+    pendingCopies[targetQuizId] = buildLegacyAdminTemplateQuizCopy(sourceQuiz, targetQuizId);
+  });
+  if (!Object.keys(pendingCopies).length) return;
+  try {
+    await stateStore.putStateValue('quizzes', pendingCopies);
+    console.log(`[Admin Templates] Created ${Object.keys(pendingCopies).length} one-time admin quiz template copy/copies.`);
+  } catch (error) {
+    console.warn('[Admin Templates] Failed to persist one-time admin quiz template copies:', error.message || error);
+  }
+}
+
 let sharedPdfBrowserPromise = null;
 
 const stateStore = createStateStore({
@@ -347,7 +398,7 @@ function buildShareMeta(req) {
     title = 'Verified Student Result on OPE Assessor';
     description = 'Open this secure OPE Assessor result link to view the verified score summary and certificate details.';
   }
-  const imageUrl = new URL('/summary-preview.png', getRequestBaseUrl(req)).toString();
+  const imageUrl = new URL('/summary-preview.png?v=20260516-social', getRequestBaseUrl(req)).toString();
   // Only treat the SPA root as a canonical URL — share-link variants get a query string
   // we keep, but unknown deep paths fall back to the site root so we don't advertise
   // arbitrary URLs (e.g. /healthz) as canonical pages.
@@ -358,9 +409,14 @@ function buildShareMeta(req) {
   return {
     title,
     description,
+    siteName: 'OPE Assessor',
+    type: 'website',
     url: canonicalUrl,
     imageUrl,
-    imageAlt: 'OPE Assessor dashboard preview with logo, analytics cards, quiz overview, and result verification highlights.'
+    imageType: 'image/png',
+    imageWidth: '1200',
+    imageHeight: '630',
+    imageAlt: 'OPE Assessor preview card with the logo, app name, and secure quiz and verified result highlights.'
   };
 }
 
@@ -371,10 +427,17 @@ function decorateHtmlForSharing(req, htmlBuffer) {
   html = injectOrReplaceMetaTag(html, /<meta name="description" content="[^"]*">/i, `<meta name="description" content="${escapeHtmlAttr(shareMeta.description)}">`);
   html = injectOrReplaceMetaTag(html, /<meta property="og:title" content="[^"]*">/i, `<meta property="og:title" content="${escapeHtmlAttr(shareMeta.title)}">`);
   html = injectOrReplaceMetaTag(html, /<meta property="og:description" content="[^"]*">/i, `<meta property="og:description" content="${escapeHtmlAttr(shareMeta.description)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:site_name" content="[^"]*">/i, `<meta property="og:site_name" content="${escapeHtmlAttr(shareMeta.siteName)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:type" content="[^"]*">/i, `<meta property="og:type" content="${escapeHtmlAttr(shareMeta.type)}">`);
   html = injectOrReplaceMetaTag(html, /<meta property="og:image" content="[^"]*">/i, `<meta property="og:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:image:secure_url" content="[^"]*">/i, `<meta property="og:image:secure_url" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:image:type" content="[^"]*">/i, `<meta property="og:image:type" content="${escapeHtmlAttr(shareMeta.imageType)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:image:width" content="[^"]*">/i, `<meta property="og:image:width" content="${escapeHtmlAttr(shareMeta.imageWidth)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta property="og:image:height" content="[^"]*">/i, `<meta property="og:image:height" content="${escapeHtmlAttr(shareMeta.imageHeight)}">`);
   html = injectOrReplaceMetaTag(html, /<meta property="og:image:alt" content="[^"]*">/i, `<meta property="og:image:alt" content="${escapeHtmlAttr(shareMeta.imageAlt)}">`);
   html = injectOrReplaceMetaTag(html, /<meta property="og:url" content="[^"]*">/i, `<meta property="og:url" content="${escapeHtmlAttr(shareMeta.url)}">`);
   html = injectOrReplaceMetaTag(html, /<link rel="canonical" href="[^"]*">/i, `<link rel="canonical" href="${escapeHtmlAttr(shareMeta.url)}">`);
+  html = injectOrReplaceMetaTag(html, /<meta name="twitter:card" content="[^"]*">/i, '<meta name="twitter:card" content="summary_large_image">');
   html = injectOrReplaceMetaTag(html, /<meta name="twitter:title" content="[^"]*">/i, `<meta name="twitter:title" content="${escapeHtmlAttr(shareMeta.title)}">`);
   html = injectOrReplaceMetaTag(html, /<meta name="twitter:description" content="[^"]*">/i, `<meta name="twitter:description" content="${escapeHtmlAttr(shareMeta.description)}">`);
   html = injectOrReplaceMetaTag(html, /<meta name="twitter:image" content="[^"]*">/i, `<meta name="twitter:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`);
@@ -1608,5 +1671,8 @@ server.listen(PORT, HOST, () => {
   });
   migrateLegacyPasswordsAtStartup().catch((error) => {
     console.warn('[Auth] Password migration encountered an error:', error.message || error);
+  });
+  ensureLegacyAdminTemplateQuizCopiesAtStartup().catch((error) => {
+    console.warn('[Admin Templates] Startup migration encountered an error:', error.message || error);
   });
 });

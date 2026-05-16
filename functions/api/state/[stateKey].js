@@ -2,6 +2,7 @@ import {
   VALID_STATE_KEYS,
   apiErrorResponse,
   deriveScope,
+  ensureLegacyAdminTemplateQuizCopies,
   getStateStore,
   jsonResponse,
   preflightResponse,
@@ -44,6 +45,7 @@ export async function onRequest(context) {
 
   try {
     const stateStore = getStateStore(env);
+    await ensureLegacyAdminTemplateQuizCopies(env);
 
     if (request.method === 'GET') {
       // GET always requires authentication — the response includes

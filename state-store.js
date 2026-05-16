@@ -13,6 +13,10 @@ const VALID_STATE_KEYS = Object.keys(DEFAULT_STATE);
 const SUPABASE_SELECT_PAGE_SIZE = 1000;
 const SUPABASE_UPSERT_BATCH_SIZE = 250;
 const OPTIONAL_SUPABASE_STATE_KEYS = new Set(['tokenTransactions']);
+const ADMIN_TEMPLATE_OWNER = 'prosperogidiaka@gmail.com';
+const LEGACY_ADMIN_TEMPLATE_SOURCE_TEACHER = 'jillmichae@gmail.com';
+const LEGACY_ADMIN_TEMPLATE_CUTOFF_ISO = '2026-05-16T23:59:59.999+01:00';
+const LEGACY_ADMIN_TEMPLATE_CUTOFF_TS = Date.parse(LEGACY_ADMIN_TEMPLATE_CUTOFF_ISO);
 
 function isObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -210,10 +214,31 @@ function getOptionalStateFallbackValue(stateKey) {
   return {};
 }
 
+function isSharedAdminTemplateQuiz(item = {}) {
+  const owner = normalizeLowerKey(item && item.teacherId);
+  const visibility = normalizeKey(item && item.templateVisibility);
+  return item.isAdminTemplate === true || (owner === ADMIN_TEMPLATE_OWNER && visibility === 'all_teachers');
+}
+
+function isLegacyAdminTemplateSourceQuiz(item = {}) {
+  const owner = normalizeLowerKey(item && item.teacherId);
+  if (owner !== LEGACY_ADMIN_TEMPLATE_SOURCE_TEACHER) return false;
+  const sourceTimestamp = Date.parse(((item && (item.createdAt || item.updatedAt)) || '').toString());
+  if (Number.isFinite(sourceTimestamp) && Number.isFinite(LEGACY_ADMIN_TEMPLATE_CUTOFF_TS)) {
+    return sourceTimestamp <= LEGACY_ADMIN_TEMPLATE_CUTOFF_TS;
+  }
+  return true;
+}
+
+function buildLegacyAdminTemplateTargetId(quizId = '') {
+  const normalizedQuizId = normalizeKey(quizId);
+  return normalizedQuizId ? `admin-template-${normalizedQuizId}` : '';
+}
+
 function filterStateForScope(state, scope) {
   if (!state || scope.isAdmin) return state;
   const teacherId = scope.teacherId;
-  const filterMap = (map) => {
+  const filterOwnedMap = (map) => {
     if (!map || typeof map !== 'object') return {};
     const out = {};
     Object.keys(map).forEach((key) => {
@@ -223,8 +248,19 @@ function filterStateForScope(state, scope) {
     });
     return out;
   };
-  const ownQuizzes = filterMap(state.quizzes || {});
-  const ownQuizIds = new Set(Object.keys(ownQuizzes));
+  const filterVisibleQuizMap = (map) => {
+    if (!map || typeof map !== 'object') return {};
+    const out = {};
+    Object.keys(map).forEach((key) => {
+      const item = map[key];
+      const owner = normalizeLowerKey(item && (item.teacherId || item.userId));
+      if (owner === teacherId || isSharedAdminTemplateQuiz(item)) out[key] = item;
+    });
+    return out;
+  };
+  const ownTeacherQuizzes = filterOwnedMap(state.quizzes || {});
+  const visibleQuizzes = filterVisibleQuizMap(state.quizzes || {});
+  const ownQuizIds = new Set(Object.keys(ownTeacherQuizzes));
   const ownTeachers = {};
   if (state.teachers && state.teachers[teacherId]) ownTeachers[teacherId] = state.teachers[teacherId];
   const ownStudents = {};
@@ -232,7 +268,7 @@ function filterStateForScope(state, scope) {
   const ownSubmissions = (state.submissions || []).filter((item) => item && ownQuizIds.has(normalizeKey(item.quizId)));
   const ownTokenTxns = (state.tokenTransactions || []).filter((item) => item && normalizeLowerKey(item.userId) === teacherId);
   return {
-    quizzes: ownQuizzes,
+    quizzes: visibleQuizzes,
     submissions: ownSubmissions,
     teachers: ownTeachers,
     students: ownStudents,
@@ -542,13 +578,36 @@ function createSupabaseStateStore(options) {
   }
 
   async function loadQuizzesMap(scope) {
-    const rows = await selectAllRows(
-      tables.quizzes,
-      SUPABASE_SELECT_COLUMNS.quizzes,
-      [{ column: 'quiz_id' }],
-      teacherIdFilter('teacher_id', scope)
-    );
-    return rowsToQuizMap(rows);
+    if (scope.isAdmin) {
+      const rows = await selectAllRows(
+        tables.quizzes,
+        SUPABASE_SELECT_COLUMNS.quizzes,
+        [{ column: 'quiz_id' }]
+      );
+      return rowsToQuizMap(rows);
+    }
+    const [teacherRows, adminTemplateRows] = await Promise.all([
+      selectAllRows(
+        tables.quizzes,
+        SUPABASE_SELECT_COLUMNS.quizzes,
+        [{ column: 'quiz_id' }],
+        (query) => query.eq('teacher_id', scope.teacherId)
+      ),
+      selectAllRows(
+        tables.quizzes,
+        SUPABASE_SELECT_COLUMNS.quizzes,
+        [{ column: 'quiz_id' }],
+        (query) => query.eq('teacher_id', ADMIN_TEMPLATE_OWNER)
+      )
+    ]);
+    const visibleAdminTemplateRows = (adminTemplateRows || []).filter((row) => {
+      const payload = isObject(row && row.payload) ? row.payload : {};
+      return isSharedAdminTemplateQuiz({
+        ...payload,
+        teacherId: payload.teacherId || row.teacher_id
+      });
+    });
+    return rowsToQuizMap([...(teacherRows || []), ...visibleAdminTemplateRows]);
   }
 
   async function loadTeachersMap(scope) {
@@ -708,10 +767,15 @@ function createStateStore(options) {
 }
 
 module.exports = {
+  ADMIN_TEMPLATE_OWNER,
+  LEGACY_ADMIN_TEMPLATE_CUTOFF_ISO,
+  LEGACY_ADMIN_TEMPLATE_SOURCE_TEACHER,
   DEFAULT_STATE,
   VALID_STATE_KEYS,
+  buildLegacyAdminTemplateTargetId,
   createStateStore,
   buildQuizRow,
   buildAdminScope,
-  buildTeacherScope
+  buildTeacherScope,
+  isLegacyAdminTemplateSourceQuiz
 };

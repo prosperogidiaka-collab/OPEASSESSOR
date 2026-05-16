@@ -5,7 +5,15 @@
 // `process.env` at request time. Helpers below take `env` so handlers can
 // stay pure.
 
-import { createStateStore, VALID_STATE_KEYS, buildAdminScope, buildTeacherScope } from '../../../state-store.js';
+import {
+  ADMIN_TEMPLATE_OWNER,
+  buildLegacyAdminTemplateTargetId,
+  isLegacyAdminTemplateSourceQuiz,
+  createStateStore,
+  VALID_STATE_KEYS,
+  buildAdminScope,
+  buildTeacherScope
+} from '../../../state-store.js';
 
 export { VALID_STATE_KEYS, buildAdminScope, buildTeacherScope };
 
@@ -18,6 +26,7 @@ export function deriveScope(session) {
 }
 
 let cachedStateStore = null;
+let adminTemplateMigrationPromise = null;
 
 export function readEnv(env, key, fallback = '') {
   const raw = env && env[key];
@@ -106,6 +115,50 @@ export function getStateStore(env) {
     supabaseTablePrefix: readEnv(env, 'SUPABASE_TABLE_PREFIX', 'ope_').trim()
   });
   return cachedStateStore;
+}
+
+function buildLegacyAdminTemplateQuizCopy(sourceQuiz = {}, targetQuizId = '') {
+  const now = new Date().toISOString();
+  return {
+    ...sourceQuiz,
+    id: targetQuizId,
+    teacherId: ADMIN_TEMPLATE_OWNER,
+    isAdminTemplate: true,
+    templateVisibility: 'all_teachers',
+    sourceTeacherId: (sourceQuiz.teacherId || '').toString().trim().toLowerCase(),
+    sourceQuizId: sourceQuiz.id || '',
+    copiedToAdminAt: now,
+    updatedAt: now,
+    createdAt: sourceQuiz.createdAt || now,
+    cloudSyncedAt: now
+  };
+}
+
+export async function ensureLegacyAdminTemplateQuizCopies(env) {
+  if (adminTemplateMigrationPromise) return adminTemplateMigrationPromise;
+  adminTemplateMigrationPromise = (async () => {
+    try {
+      const stateStore = getStateStore(env);
+      const quizzes = await stateStore.getStateValue('quizzes', buildAdminScope());
+      if (!quizzes || typeof quizzes !== 'object') return 0;
+      const pendingCopies = {};
+      Object.keys(quizzes).forEach((quizId) => {
+        const sourceQuiz = quizzes[quizId];
+        if (!isLegacyAdminTemplateSourceQuiz(sourceQuiz)) return;
+        const targetQuizId = buildLegacyAdminTemplateTargetId(sourceQuiz.id || quizId);
+        if (!targetQuizId || quizzes[targetQuizId] || pendingCopies[targetQuizId]) return;
+        pendingCopies[targetQuizId] = buildLegacyAdminTemplateQuizCopy(sourceQuiz, targetQuizId);
+      });
+      const count = Object.keys(pendingCopies).length;
+      if (!count) return 0;
+      await stateStore.putStateValue('quizzes', pendingCopies);
+      return count;
+    } catch (error) {
+      console.warn('[Admin Templates] Workers migration skipped:', error && error.message ? error.message : error);
+      return 0;
+    }
+  })();
+  return adminTemplateMigrationPromise;
 }
 
 export function apiErrorResponse(request, env, error, fallbackMessage, options = {}) {

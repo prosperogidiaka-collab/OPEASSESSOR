@@ -1,7 +1,7 @@
 {
   "name": "OPE Assessor",
   "short_name": "OPE Assessor",
-  "description": "Zero-Friction Assessment Portal - Privacy First",
+  "description": "Teacher dashboards, secure quiz links, verified student results, and correction-ready assessment sharing.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -26,7 +26,7 @@
   "screenshots": [
     {
       "src": "./summary-preview.png",
-      "sizes": "1600x900",
+      "sizes": "1200x630",
       "type": "image/png",
       "form_factor": "wide"
     }

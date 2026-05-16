@@ -1,6 +1,7 @@
 import {
   apiErrorResponse,
   deriveScope,
+  ensureLegacyAdminTemplateQuizCopies,
   getStateStore,
   jsonResponse,
   preflightResponse
@@ -37,6 +38,7 @@ export async function onRequest(context) {
   }
   try {
     const stateStore = getStateStore(env);
+    await ensureLegacyAdminTemplateQuizCopies(env);
     const state = await stateStore.getState(deriveScope(session));
     return jsonResponse(request, env, 200, redactState(state));
   } catch (error) {

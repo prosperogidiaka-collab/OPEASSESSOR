@@ -7822,8 +7822,16 @@ function renderQuizTake() {
 
     // submit button
     document.getElementById('submitExam').onclick = ()=> {
-      if (!confirm('Submit exam now?')) return;
-      collectAndSubmit();
+      let confirmed = false;
+      examSubmissionIntent.confirmOpen = true;
+      try {
+        confirmed = window.confirm('Submit exam now?');
+      } finally {
+        examSubmissionIntent.confirmOpen = false;
+      }
+      if (!confirmed) return;
+      examSubmissionIntent.manualSubmitInFlight = true;
+      collectAndSubmit({ manual: true });
     };
 
     // timer display (reuse existing timer logic when exam starts)
@@ -12397,6 +12405,14 @@ function hexToRgbTriplet(hex) {
 let timerInterval = null;
 let timeRemaining = 0;
 let startTime = null;
+const examSubmissionIntent = {
+  confirmOpen: false,
+  manualSubmitInFlight: false
+};
+
+function isManualExamSubmitFlowActive() {
+  return !!(examSubmissionIntent.confirmOpen || examSubmissionIntent.manualSubmitInFlight);
+}
 
 function autoSubmit() {
   showNotification('  Time up! Auto-submitting...', 'warning');
@@ -12411,6 +12427,7 @@ function showCreateQuizModal(editQuizId = '', options = {}) {
   if (!canSetQuestions()) return showLicenseRequired();
   const editingQuiz = editQuizId ? getAllQuizzes()[editQuizId] : null;
   const templateQuiz = !editingQuiz && options.templateQuizId ? getAllQuizzes()[options.templateQuizId] : null;
+  if (!editingQuiz && !getTeacherLicenseStatus().canSaveQuiz) return showLicenseRequired();
   if (editingQuiz && editingQuiz.teacherId !== state.teacherId && !isSuperAdmin()) return showNotification('Access denied: this quiz belongs to another teacher', 'error');
   if (!editingQuiz && options.templateQuizId && !templateQuiz) return showNotification('Admin quiz template not found', 'error');
   if (templateQuiz && !canSetQuizFromAdminTemplate(templateQuiz)) return showNotification('Admin quiz template not found', 'error');
@@ -13490,6 +13507,7 @@ function exportQuizTemplate(type = 'mcq') {
 let _visibilityTimer = null;
 document.addEventListener('visibilitychange', ()=>{
   if (state.view === 'take' && state.currentSubmission?.examStarted) {
+    if (isManualExamSubmitFlowActive()) return;
     if (document.hidden) {
       if (state.currentSubmission) {
         state.currentSubmission.monitoring = state.currentSubmission.monitoring || {};
@@ -14886,7 +14904,7 @@ function stopWebcam() {
   } catch (e) { console.warn(e); }
 }
 
-async function collectAndSubmit() {
+async function collectAndSubmit(options = {}) {
   try {
     const sub = state.currentSubmission;
     if (!sub) return showNotification('Nothing to submit','error');
@@ -14968,6 +14986,9 @@ async function collectAndSubmit() {
       showNotification('Submitted. Result will be released by your teacher.', 'success', 7000);
     }
   } catch (e) { console.error(e); showNotification('Error submitting','error'); }
+  finally {
+    if (options.manual === true) examSubmissionIntent.manualSubmitInFlight = false;
+  }
 }
 
 // Global key/context handlers for copy protection while taking
@@ -15027,6 +15048,7 @@ document.addEventListener('keydown', (e)=>{
 
 // Fullscreen exit detection -> auto submit
 document.addEventListener('fullscreenchange', ()=>{
+  if (isManualExamSubmitFlowActive()) return;
   if (state.view === 'take' && state.currentSubmission?.examStarted && !document.fullscreenElement) {
     state.currentSubmission.monitoring = state.currentSubmission.monitoring || {};
     state.currentSubmission.monitoring.fullscreenExits = (state.currentSubmission.monitoring.fullscreenExits || 0) + 1;
