@@ -192,6 +192,19 @@ function getSanitizedQuestionOptions(question = {}) {
   return (question.options || []).map((option) => sanitizeScientificText(option || ''));
 }
 
+function normalizeQuestionType(value = '') {
+  const raw = (value || '').toString().trim().toLowerCase();
+  if (raw === 'objective' || raw === 'multiple choice' || raw === 'multiple-choice' || raw === 'mcq') return 'mcq';
+  if (raw === 'truefalse' || raw === 'true-false' || raw === 'yes/no' || raw === 'yesno' || raw === 'boolean') return 'yesno';
+  if (raw === 'shortanswer' || raw === 'short-answer' || raw === 'short') return 'short';
+  if (raw === 'essay' || raw === 'long' || raw === 'long-answer' || raw === 'longanswer') return 'essay';
+  return raw || 'mcq';
+}
+
+function normalizeComparableOptionText(value = '') {
+  return stripHtmlToText(value).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 function normalizeQuestionImagePlacement(value = '') {
   return (value || '').toString().trim().toLowerCase() === 'after' ? 'after' : 'before';
 }
@@ -348,6 +361,103 @@ function getQuizSubjectMetaMap(quiz = {}) {
   return map;
 }
 
+function getQuizLiveQuestionMap(quiz) {
+  const map = {};
+  (quiz?.subjects || []).forEach((subject) => {
+    const source = Array.isArray(subject?.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject?.questions;
+    const normalizedQuestions = buildQuestionsWithSubjectImages(source || [], subject?.name || 'General', subject?.questionImages || [], {
+      replaceExistingMedia: Array.isArray(subject?.questionImages)
+    });
+    normalizedQuestions.forEach((question, index) => {
+      const sourceId = (question && question._sourceId) || makeQuestionId(question || {}, index);
+      if (sourceId) map[sourceId] = question;
+    });
+  });
+  return map;
+}
+
+function evaluateCorrectionAnswerForQuestion(snapshotQuestion, rawAnswer, index, liveQuestionMap) {
+  const qType = normalizeQuestionType(snapshotQuestion && snapshotQuestion.type);
+  const stored = rawAnswer == null ? '' : rawAnswer.toString();
+  const trimmed = stored.trim();
+  if (!trimmed) return 'unanswered';
+  const sourceId = (snapshotQuestion && snapshotQuestion._sourceId) || makeQuestionId(snapshotQuestion || {}, index);
+  const liveQuestion = liveQuestionMap ? liveQuestionMap[sourceId] : null;
+
+  if (qType === 'mcq') {
+    const chosenLetter = trimmed.toUpperCase();
+    const chosenText = getDisplayOptionText(snapshotQuestion, chosenLetter);
+    const liveCorrectLetter = ((liveQuestion && liveQuestion.answer) || (snapshotQuestion && snapshotQuestion.answer) || '').toString().trim().toUpperCase();
+    const liveCorrectText = getDisplayOptionText(liveQuestion || snapshotQuestion, liveCorrectLetter);
+    if (chosenText && liveCorrectText) {
+      return normalizeComparableOptionText(chosenText) === normalizeComparableOptionText(liveCorrectText) ? 'correct' : 'wrong';
+    }
+    return chosenLetter === liveCorrectLetter ? 'correct' : 'wrong';
+  }
+
+  if (qType === 'yesno') {
+    const liveAnswer = ((liveQuestion && liveQuestion.answer) || (snapshotQuestion && snapshotQuestion.answer) || '').toString().trim().toLowerCase();
+    return trimmed.toLowerCase() === liveAnswer ? 'correct' : 'wrong';
+  }
+
+  if (qType === 'short') {
+    const accepted = Array.isArray(liveQuestion && liveQuestion.acceptedAnswers) && liveQuestion.acceptedAnswers.length
+      ? liveQuestion.acceptedAnswers
+      : (Array.isArray(snapshotQuestion && snapshotQuestion.acceptedAnswers) ? snapshotQuestion.acceptedAnswers : []);
+    const normalizedAnswer = normalizeComparableOptionText(trimmed);
+    return accepted.some((entry) => normalizeComparableOptionText(entry || '') === normalizedAnswer) ? 'correct' : 'wrong';
+  }
+
+  if (qType === 'essay') return 'pending';
+  return 'unanswered';
+}
+
+function computeCorrectionPdfCounts(entries = [], submission = {}, quiz = {}, subjectName = '') {
+  const answers = (submission && submission.answers) || {};
+  const liveQuestionMap = getQuizLiveQuestionMap(quiz || {});
+  let attempted = 0;
+  let correct = 0;
+  let wrong = 0;
+  let pending = 0;
+
+  (Array.isArray(entries) ? entries : []).forEach((entry) => {
+    const snapshotQuestion = (entry && entry.snapshotQuestion) || (entry && entry.question) || {};
+    const verdict = evaluateCorrectionAnswerForQuestion(snapshotQuestion, answers[entry.originalIndex], entry.originalIndex, liveQuestionMap);
+    if (verdict === 'unanswered') return;
+    attempted += 1;
+    if (verdict === 'correct') correct += 1;
+    else if (verdict === 'pending') pending += 1;
+    else wrong += 1;
+  });
+
+  const requestedSubject = normalizeSubjectName(subjectName || '');
+  const breakdown = Array.isArray(submission && submission.subjectBreakdown) && submission.subjectBreakdown.length
+    ? submission.subjectBreakdown
+    : computeSubmissionSubjectBreakdown(quiz, submission || {});
+  const subjectSummary = requestedSubject
+    ? (breakdown.find((item) => normalizeSubjectName(item && item.name) === requestedSubject) || null)
+    : null;
+  const totalMarks = subjectSummary ? Number(subjectSummary.totalMarks || 0) : getSubmissionTotalMarks(submission, quiz);
+  const markPerQuestion = Number(subjectSummary && subjectSummary.markPerQuestion) > 0
+    ? Number(subjectSummary.markPerQuestion)
+    : ((entries.length > 0 && totalMarks > 0) ? (totalMarks / entries.length) : 0);
+  const negativeEnabled = !!(quiz && quiz.negativeMarkEnabled);
+  const negativeValue = Number((quiz && quiz.negativeMarkValue) || 0) || 0;
+  const rawScore = (correct * markPerQuestion) - (negativeEnabled ? wrong * negativeValue * markPerQuestion : 0);
+  const score = Math.max(0, Math.round(rawScore * 100) / 100);
+  const percent = totalMarks > 0 ? clampPercent((score / totalMarks) * 100) : 0;
+
+  return {
+    attempted,
+    correct,
+    wrong,
+    pending,
+    totalMarks,
+    score,
+    percent
+  };
+}
+
 function buildQuestionSubjectSections(questions = []) {
   const subjectMap = new Map();
   (Array.isArray(questions) ? questions : []).forEach((question, globalIndex) => {
@@ -450,11 +560,20 @@ function computeSubmissionCounts(submission = {}, quiz = {}) {
 
 function buildCorrectionQuestionEntries(submission, options = {}) {
   const requestedSubject = normalizeSubjectName(options.subjectName || '');
-  const entries = ((submission && submission.allQuestions) || []).map((question, index) => ({
-    question,
-    originalIndex: index,
-    subject: getQuestionSubjectLabel(question)
-  }));
+  const liveQuestionMap = options.quiz ? getQuizLiveQuestionMap(options.quiz) : null;
+  const entries = ((submission && submission.allQuestions) || []).map((question, index) => {
+    const sourceId = (question && question._sourceId) || makeQuestionId(question || {}, index);
+    const liveQuestion = liveQuestionMap ? liveQuestionMap[sourceId] : null;
+    const mergedQuestion = liveQuestion
+      ? { ...question, ...liveQuestion, _subject: (question && question._subject) || (liveQuestion && liveQuestion._subject), _sourceId: sourceId }
+      : question;
+    return {
+      question: mergedQuestion,
+      snapshotQuestion: question,
+      originalIndex: index,
+      subject: getQuestionSubjectLabel(mergedQuestion)
+    };
+  });
   if (!requestedSubject) return { entries, subjectName: '', matchedRequestedSubject: true };
   const filtered = entries.filter((entry) => normalizeSubjectName(entry.subject) === requestedSubject);
   return {
@@ -724,7 +843,7 @@ function buildResultSummaryBody(payload = {}) {
 function buildStudentCorrectionBody(payload = {}) {
   const quiz = payload.quiz || {};
   const submission = payload.submission || {};
-  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: payload.subjectName || '' });
+  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: payload.subjectName || '', quiz });
   const entries = correctionView.entries.slice();
   const resolvedSubjectName = correctionView.subjectName || (payload.subjectName || '').toString().trim();
   const breakdown = Array.isArray(submission.subjectBreakdown) && submission.subjectBreakdown.length
@@ -733,14 +852,16 @@ function buildStudentCorrectionBody(payload = {}) {
   const subjectSummary = resolvedSubjectName
     ? (breakdown.find((item) => normalizeSubjectName(item.name) === normalizeSubjectName(resolvedSubjectName)) || null)
     : null;
+  const correctionCounts = computeCorrectionPdfCounts(entries, submission, quiz, resolvedSubjectName);
   const overallCounts = computeSubmissionCounts(submission, quiz);
-  const displayScore = subjectSummary ? subjectSummary.score : overallCounts.score;
+  const displayScore = correctionCounts.score;
   const displayTotalMarks = subjectSummary ? subjectSummary.totalMarks : overallCounts.totalMarks;
-  const displayPercent = subjectSummary ? subjectSummary.percent : overallCounts.percent;
-  const displayCorrect = subjectSummary ? subjectSummary.correct : overallCounts.correct;
-  const displayAttempted = subjectSummary ? subjectSummary.attempted : overallCounts.attempted;
-  const displayWrong = subjectSummary ? subjectSummary.wrong : overallCounts.wrong;
+  const displayPercent = correctionCounts.percent;
+  const displayCorrect = correctionCounts.correct;
+  const displayAttempted = correctionCounts.attempted;
+  const displayWrong = correctionCounts.wrong;
   const displaySubject = resolvedSubjectName || 'All Subjects';
+  const liveQuestionMap = getQuizLiveQuestionMap(quiz || {});
 
   return `
     <div class="page-shell">
@@ -775,16 +896,24 @@ function buildStudentCorrectionBody(payload = {}) {
         <div class="question-list">
           ${entries.map((entry) => {
             const question = entry.question || {};
+            const snapshotQuestion = entry.snapshotQuestion || question;
             const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
             const correct = (question.answer || '').toString().toUpperCase();
-            const isCorrect = !!chosen && chosen === correct;
-            const statusText = isCorrect ? 'Correct' : 'Incorrect';
+            const verdict = evaluateCorrectionAnswerForQuestion(snapshotQuestion, chosen, entry.originalIndex, liveQuestionMap);
+            const statusText = verdict === 'correct' ? 'Correct' : verdict === 'pending' ? 'Pending Review' : verdict === 'unanswered' ? 'No answer' : 'Incorrect';
             const topic = question.topic || entry.subject || 'General';
             const keyConcept = question.keyConcept || question.topic || entry.subject || 'General';
             const explanation = question.explanation || 'No explanation provided yet.';
             const learningPoint = question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.';
-            const studentAnswerText = chosen ? `${chosen}. ${getDisplayOptionText(question, chosen)}` : 'No answer';
+            const chosenLetter = (chosen || '').toString().trim().toUpperCase();
+            const studentAnswerText = chosenLetter ? `${chosenLetter}. ${getDisplayOptionText(snapshotQuestion, chosenLetter)}` : 'No answer';
             const correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
+            const liveOptions = Array.isArray(question.options) ? question.options : [];
+            const studentChosenText = chosenLetter ? getDisplayOptionText(snapshotQuestion, chosenLetter) : '';
+            const studentLiveIndex = studentChosenText
+              ? liveOptions.findIndex((option) => normalizeComparableOptionText(option || '') === normalizeComparableOptionText(studentChosenText))
+              : -1;
+            const selectedAnswer = studentLiveIndex >= 0 ? String.fromCharCode(65 + studentLiveIndex) : chosenLetter;
             const longClass = isLongCard(question.question || '', explanation, learningPoint) ? ' long' : '';
             return `
               <article class="question-card${longClass}">
@@ -799,7 +928,7 @@ function buildStudentCorrectionBody(payload = {}) {
                 <div class="meta-text"><strong>Status:</strong> ${escapeHtml(statusText)}</div>
                 <div class="meta-text"><strong>Key Concept:</strong> <span class="rich-text-output">${renderRichTextHtml(keyConcept)}</span></div>
                 <div class="meta-text"><strong>Options:</strong></div>
-                ${buildOptionListHtml(question, { selectedAnswer: chosen, correctAnswer: correct })}
+                ${buildOptionListHtml(question, { selectedAnswer, correctAnswer: correct })}
                 <div class="meta-text"><strong>Student Answer:</strong> ${escapeHtml(studentAnswerText)}</div>
                 <div class="meta-text"><strong>Correct Answer:</strong> ${escapeHtml(correctAnswerText)}</div>
                 <div class="meta-text"><strong>Topic:</strong> <span class="rich-text-output">${renderRichTextHtml(topic)}</span></div>
