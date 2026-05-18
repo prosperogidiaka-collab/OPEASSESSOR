@@ -9046,6 +9046,10 @@ function getSanitizedQuestionOptions(question = {}) {
   return (question.options || []).map((option) => sanitizeScientificText(option || ''));
 }
 
+function normalizeComparableOptionText(value = '') {
+  return sanitizeScientificText((value || '').toString()).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 function buildCorrectionPdfHtml(submission, quiz, opts = {}) {
   const showNegativePenalty = !!opts.showNegativePenalty;
   const questions = submission.allQuestions || [];
@@ -9242,16 +9246,19 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
       const studentChosenText = chosenLetter
         ? getDisplayOptionText(snapshotQuestion, chosenLetter)
         : '';
-      // For the option-list highlighting we want the row matching the
-      // student's pick to show as selected. With shuffled options the
-      // student's letter doesn't map cleanly, so resolve by text.
+      // The PDF renders the canonical LIVE option list, so the "Student
+      // answer" line and the selected option highlight should use the LIVE
+      // letter for the chosen text. That keeps the statement lines consistent
+      // with the option block the reader is looking at.
       const liveOptionsArr = Array.isArray(question.options) ? question.options : [];
-      const studentLiveIdx = studentChosenText ? liveOptionsArr.indexOf(studentChosenText) : -1;
+      const studentLiveIdx = studentChosenText
+        ? liveOptionsArr.findIndex((option) => normalizeComparableOptionText(option || '') === normalizeComparableOptionText(studentChosenText))
+        : -1;
       const studentLiveLetter = studentLiveIdx >= 0
         ? String.fromCharCode(65 + studentLiveIdx)
         : (chosenLetter || '');
       studentAnswerText = chosen
-        ? `${chosenLetter}. ${studentChosenText}`
+        ? `${studentLiveLetter || chosenLetter}. ${studentChosenText || chosen}`
         : 'No answer';
       correctAnswerText = liveCorrectLetter
         ? `${liveCorrectLetter}. ${getDisplayOptionText(question, liveCorrectLetter)}`

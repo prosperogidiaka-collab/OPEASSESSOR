@@ -906,14 +906,14 @@ function buildStudentCorrectionBody(payload = {}) {
             const explanation = question.explanation || 'No explanation provided yet.';
             const learningPoint = question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.';
             const chosenLetter = (chosen || '').toString().trim().toUpperCase();
-            const studentAnswerText = chosenLetter ? `${chosenLetter}. ${getDisplayOptionText(snapshotQuestion, chosenLetter)}` : 'No answer';
+            const studentChosenText = chosenLetter ? getDisplayOptionText(snapshotQuestion, chosenLetter) : '';
             const correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
             const liveOptions = Array.isArray(question.options) ? question.options : [];
-            const studentChosenText = chosenLetter ? getDisplayOptionText(snapshotQuestion, chosenLetter) : '';
             const studentLiveIndex = studentChosenText
               ? liveOptions.findIndex((option) => normalizeComparableOptionText(option || '') === normalizeComparableOptionText(studentChosenText))
               : -1;
             const selectedAnswer = studentLiveIndex >= 0 ? String.fromCharCode(65 + studentLiveIndex) : chosenLetter;
+            const studentAnswerText = chosenLetter ? `${selectedAnswer || chosenLetter}. ${studentChosenText || chosenLetter}` : 'No answer';
             const longClass = isLongCard(question.question || '', explanation, learningPoint) ? ' long' : '';
             return `
               <article class="question-card${longClass}">
