@@ -5095,9 +5095,15 @@ function showAlertsPanel() {
   modal.style.padding = '72px 24px 24px';
 
   const quizzes = getAllQuizzes();
-  const quizKeys = Object.keys(quizzes).filter(k => state.teacherId && normalizeEmail(quizzes[k].teacherId) === normalizeEmail(state.teacherId));
+  const quizKeys = Object.keys(quizzes).filter((k) => {
+    const quiz = quizzes[k];
+    if (!quiz || isDeletedQuiz(quiz)) return false;
+    if (isSuperAdmin()) return true;
+    return state.teacherId && normalizeEmail(quiz.teacherId) === normalizeEmail(state.teacherId);
+  });
   const submissions = getAllSubmissions().filter(s => quizKeys.includes(s.quizId));
   const now = Date.now();
+  const recentSubmissionWindowMs = 24 * 60 * 60 * 1000;
   const alerts = [];
 
   if (isTeacherLoggedIn()) {
@@ -5111,6 +5117,24 @@ function showAlertsPanel() {
   } else {
     alerts.push({ type: 'info', title: 'Guest mode', detail: 'Log in as a teacher to see exam and monitoring alerts.' });
   }
+
+  submissions
+    .filter((submission) => {
+      const submittedAt = new Date(submission?.submittedAt || submission?.updatedAt || 0).getTime();
+      return submittedAt && submittedAt <= now && (now - submittedAt) <= recentSubmissionWindowMs;
+    })
+    .sort((left, right) => new Date(right?.submittedAt || right?.updatedAt || 0).getTime() - new Date(left?.submittedAt || left?.updatedAt || 0).getTime())
+    .slice(0, 10)
+    .forEach((submission) => {
+      const studentLabel = submission.name || submission.email || 'Student';
+      const quizLabel = quizzes[submission.quizId]?.title || submission.quizId || 'Quiz';
+      const submittedAtText = submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'Recently';
+      alerts.push({
+        type: 'info',
+        title: 'Recent submission',
+        detail: `${studentLabel} submitted ${quizLabel} on ${submittedAtText}.`
+      });
+    });
 
   submissions.slice(-10).reverse().forEach(s => {
     const m = s.monitoring || {};
@@ -5132,7 +5156,7 @@ function showAlertsPanel() {
       <h3 style="margin:0">Alerts</h3>
       <button id="closeAlertsPanel" class="btn btn-ghost btn-sm">Close</button>
     </div>
-    <div class="small" style="margin-bottom:12px">Exam notices, token status, and recent monitoring warnings.</div>
+    <div class="small" style="margin-bottom:12px">Exam notices, token status, recent quiz submissions from the last 24 hours, and recent monitoring warnings.</div>
     ${alerts.map(a => `
       <div class="alert-item alert-${escapeHtml(a.type)}">
         <strong>${escapeHtml(a.title)}</strong>
