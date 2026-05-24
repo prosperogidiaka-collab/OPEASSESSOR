@@ -424,13 +424,6 @@ let _pendingScrollRestore = null;
 let _overlayBodyLockObserver = null;
 let _pendingNewTeacherProfilePrompt = false;
 
-function getAppLogoUrl() {
-  if (typeof window !== 'undefined' && window.location && /^https?:/i.test(window.location.origin || '')) {
-    return `${window.location.origin}/ope-icon-192.png`;
-  }
-  return '/ope-icon-192.png';
-}
-
 function getPdfBootstrapPayload() {
   if (typeof window === 'undefined') return null;
   const payload = window.__OPE_PDF_BOOTSTRAP__;
@@ -4814,7 +4807,7 @@ function render() {
   top.innerHTML = `
     <div class="container" style="display:flex;align-items:center;justify-content:space-between">
       <div style="display:flex;align-items:center;gap:12px">
-        <img class="brand-logo" src="${escapeHtml(getAppLogoUrl())}" alt="OPE Assessor logo" />
+        <div style="width:44px;height:44px;border-radius:10px;background:linear-gradient(90deg,var(--primary),var(--primary-600));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800">OPE</div>
         <div>
           <div class="title">OPE Assessor</div>
           <div class="small">Zero-friction assessments - privacy first</div>
@@ -10853,7 +10846,7 @@ function applyGradeToSubmission(submission, grade) {
 function buildCertificateBrandMarkup() {
   return `
     <div class="cert-brand-lockup" aria-label="OPE Assessor logo">
-      <div class="cert-logo-badge"><img class="cert-logo-image" src="${escapeHtml(getAppLogoUrl())}" alt="OPE Assessor logo" /></div>
+      <div class="cert-logo-badge"><span>OPE</span></div>
       <div class="cert-logo-text">
         <strong>OPE Assessor</strong>
         <span>Verified Result Certificate</span>
@@ -11323,8 +11316,8 @@ function getCertificateResultCss() {
     .cert-inner:before{content:"";position:absolute;inset:10px;border:2px solid rgba(47,128,237,.22);border-radius:12px;pointer-events:none}
     .cert-header{text-align:center;padding:18px 16px 16px;position:relative;z-index:1;border-radius:22px;background:linear-gradient(135deg,rgba(238,248,255,.96) 0%,rgba(230,243,255,.92) 52%,rgba(244,250,255,.98) 100%);border:1px solid rgba(47,128,237,.16);box-shadow:0 12px 28px rgba(47,128,237,.10)}
     .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
-    .cert-logo-badge{width:72px;height:72px;border-radius:22px;background:#ffffff;box-shadow:0 14px 30px rgba(47,128,237,.16);overflow:hidden}
-    .cert-logo-image{display:block;width:100%;height:100%;object-fit:cover;border-radius:inherit}
+    .cert-logo-badge{width:72px;height:72px;border-radius:22px;border:4px solid #2F80ED;background:#ffffff;padding:5px}
+    .cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:16px;background:#ffffff;color:#2F80ED;font-size:28px;font-weight:900;letter-spacing:.05em}
     .cert-logo-text{text-align:left}
     .cert-logo-text strong{display:block;font-size:28px;line-height:1.05;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
     .cert-logo-text span{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#1F2937;margin-top:5px;font-weight:800}
@@ -11407,6 +11400,7 @@ function getCertificateResultCss() {
     @media(max-width:720px){
       .cert-inner{padding:18px 14px 16px}
       .cert-logo-badge{width:60px;height:60px;border-radius:18px}
+      .cert-logo-badge span{font-size:24px}
       .cert-logo-text{text-align:center}
       .cert-logo-text strong{font-size:22px}
       .cert-quiz-title{font-size:28px}
