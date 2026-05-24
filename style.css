@@ -213,6 +213,7 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 /* App shell polish and local utility fallbacks */
 .topbar{background:rgba(255,255,255,.92)!important;border-bottom:1px solid #E5E7EB!important;padding:14px 24px!important;backdrop-filter:blur(10px);box-shadow:0 1px 0 rgba(15,23,36,0.04)!important;position:sticky;top:0;z-index:100}
 .topbar .container{padding:0!important}
+.brand-logo{width:44px;height:44px;border-radius:10px;display:block;object-fit:cover;box-shadow:0 10px 24px rgba(47,128,237,.18)}
 .brand .title,.title{font-weight:800;font-size:18px;color:#0F172A}
 .header-nav{display:flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid #E5E7EB;border-radius:999px;background:rgba(248,250,252,.92)}
 .header-nav .nav-btn{border:0!important;border-bottom:3px solid transparent!important;border-radius:999px!important;background:transparent!important;color:#475569!important;font-weight:700!important;padding:10px 14px!important}
@@ -453,8 +454,8 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .cert-top-rule{height:32px;border-radius:999px;background:#DDBB5E;margin:0 0 -12px;position:relative;z-index:2}
 .cert-header{background:linear-gradient(135deg,#08111C 0%,#101922 58%,#1F2937 100%);color:#fff;text-align:center;border-radius:0 0 24px 24px;padding:34px 16px 30px;position:relative;margin-top:-6px}
 .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
-.cert-logo-badge{width:74px;height:74px;border-radius:22px;background:linear-gradient(135deg,#DDBB5E,#F6E7B6);padding:3px;box-shadow:0 12px 30px rgba(0,0,0,.2)}
-.cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:19px;background:linear-gradient(135deg,#0F172A,#1E293B);color:#F8E8B0;font-size:26px;font-weight:900;letter-spacing:.1em}
+.cert-logo-badge{width:74px;height:74px;border-radius:22px;background:#fff;box-shadow:0 12px 30px rgba(47,128,237,.16);overflow:hidden}
+.cert-logo-image{display:block;width:100%;height:100%;object-fit:cover;border-radius:inherit}
 .cert-logo-text{text-align:left}
 .cert-logo-text strong{display:block;font-size:24px;line-height:1;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
 .cert-logo-text span{display:block;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#DDBB5E;margin-top:6px}
@@ -673,7 +674,6 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 	.cert-header{padding:26px 10px 22px}
 	.cert-brand-lockup{gap:10px}
 	.cert-logo-badge{width:58px;height:58px;border-radius:18px}
-	.cert-logo-badge span{border-radius:15px;font-size:20px}
 	.cert-logo-text{text-align:center}
 	.cert-logo-text strong{font-size:18px}
 	.cert-logo-text span{font-size:10px;letter-spacing:.13em}

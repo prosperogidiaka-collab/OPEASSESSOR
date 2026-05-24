@@ -422,7 +422,14 @@ let _lastTeacherNavPullAt = 0;
 let _resultsPulledForQuizId = '';
 let _pendingScrollRestore = null;
 let _overlayBodyLockObserver = null;
-const QUIZ_SHARE_PREVIEW_VERSION = '20260516-social';
+let _pendingNewTeacherProfilePrompt = false;
+
+function getAppLogoUrl() {
+  if (typeof window !== 'undefined' && window.location && /^https?:/i.test(window.location.origin || '')) {
+    return `${window.location.origin}/ope-icon-192.png`;
+  }
+  return '/ope-icon-192.png';
+}
 
 function getPdfBootstrapPayload() {
   if (typeof window === 'undefined') return null;
@@ -536,6 +543,16 @@ function getTeacherDisplayName(teacher = getCurrentTeacher(), options = {}) {
 function getTeacherPhoneLabel(teacher = getCurrentTeacher(), options = {}) {
   const phone = (teacher?.phone || teacher?.phoneNumber || '').toString().trim();
   return phone || options.fallback || 'Not set yet';
+}
+
+function getTeacherAdminAccessSummary(teacher = {}) {
+  const status = getTeacherLicenseStatus(teacher);
+  if (status.pending) return 'Request pending';
+  if (status.unlimited && status.active && !status.wrongDevice) return 'Unlimited active';
+  if (status.unlimited && status.wrongDevice) return 'Unlimited on another device';
+  if ((status.tokenBalance || 0) >= 1) return 'Tokens available';
+  if (status.expired) return 'Unlimited ended';
+  return status.label || 'No access';
 }
 
 function getTeacherUserBadgeLabel() {
@@ -1952,15 +1969,13 @@ async function pushNetworkValue(key, value, options = {}) {
     networkSyncFailureMessage = 'Cloud sync paused: your teacher session expired. Log out and log back in to push your saved changes.';
     return false;
   }
-  // The server restricts /api/state/teachers writes to super-admin sessions
-  // only. For a regular teacher this is a NO-OP, not a failure — clear the
-  // dirty flag and report success, exactly like the quizzes/submissions no-ops
-  // below. (Returning false here made flushPendingNetworkWrites — and therefore
-  // "Force Sync Now" — report "Cloud sync had problems" on every run even when
-  // every quiz uploaded fine.)
   if (stateKey === 'teachers' && !isSuperAdmin()) {
-    clearNetworkKeyDirty(key);
-    return true;
+    const selfPayload = buildTeacherSelfSyncPayload(value);
+    if (!selfPayload) {
+      clearNetworkKeyDirty(key);
+      return true;
+    }
+    value = selfPayload;
   }
   // Quizzes are exclusively per-quiz synced through /api/quizzes/<id> now.
   // Bulk PUT /api/state/quizzes was uploading the entire quizzes map
@@ -2036,7 +2051,9 @@ async function pushNetworkValue(key, value, options = {}) {
       networkSyncReady = true;
       networkSyncFailed = false;
       networkSyncFailureMessage = '';
-      const latestValue = readLocalStorageValue(key);
+      const latestValue = (stateKey === 'teachers' && !isSuperAdmin())
+        ? buildTeacherSelfSyncPayload(readLocalStorageValue(key) || {})
+        : readLocalStorageValue(key);
       if (JSON.stringify(latestValue) === JSON.stringify(value)) {
         clearNetworkKeyDirty(key);
       } else {
@@ -3006,10 +3023,50 @@ function getCurrentTeacher() {
   return null;
 }
 
+function buildTeacherSelfSyncPayload(teacherMap = {}) {
+  const teacherId = normalizeEmail(state.teacherId || getTeacherId());
+  if (!teacherId) return null;
+  const record = (teacherMap && teacherMap[teacherId]) || getTeacherById(teacherId) || getCurrentTeacher();
+  if (!record) return null;
+  const payload = {
+    teacherId,
+    email: teacherId,
+    name: (record.name || '').toString().trim(),
+    phone: (record.phone || record.phoneNumber || '').toString().trim(),
+    updatedAt: (record.updatedAt || new Date().toISOString()).toString()
+  };
+  const hasTokenRequestData = !!(
+    (record.tokenRequestStatus || '').toString().trim()
+    || (record.tokenRequestedAt || '').toString().trim()
+    || (record.tokenRequestedPackageKey || '').toString().trim()
+    || Number(record.tokenRequestedAmount || 0)
+    || Number(record.tokenRequestedTokens || 0)
+    || (record.tokenRequestedDeviceId || '').toString().trim()
+  );
+  if (hasTokenRequestData) {
+    payload.tokenRequestStatus = (record.tokenRequestStatus || '').toString().trim();
+    payload.tokenRequestedAt = (record.tokenRequestedAt || '').toString().trim();
+    payload.tokenRequestedPackageKey = (record.tokenRequestedPackageKey || '').toString().trim();
+    payload.tokenRequestedAmount = Number(record.tokenRequestedAmount || 0) || 0;
+    payload.tokenRequestedTokens = Number(record.tokenRequestedTokens || 0) || 0;
+    payload.tokenRequestedDeviceId = (record.tokenRequestedDeviceId || '').toString().trim();
+  }
+  return {
+    [teacherId]: payload
+  };
+}
+
 function updateTeacherProfileRecord(existingTeacherId, nextProfile = {}, options = {}) {
   const oldId = normalizeEmail(existingTeacherId);
   const teachers = getAllTeachers();
-  const current = teachers[oldId];
+  const current = teachers[oldId] || (normalizeEmail(state.teacherId) === oldId
+    ? {
+        teacherId: oldId,
+        email: oldId,
+        role: oldId === SUPER_ADMIN_EMAIL ? 'super_admin' : 'teacher',
+        createdAt: new Date().toISOString()
+      }
+    : null);
   if (!current) return { ok: false, message: 'Teacher account not found' };
   const emailLocked = !!options.lockEmail || normalizeEmail(current.teacherId || current.email) === SUPER_ADMIN_EMAIL;
   const nextId = emailLocked
@@ -3218,6 +3275,68 @@ function getTeacherLicenseStatus(teacher = getCurrentTeacher()) {
     summary: baseSummary,
     endsAt
   };
+}
+
+function showAdminTeacherAccountDetails(teacherId) {
+  if (!isSuperAdmin()) return showNotification('Admin access required', 'error');
+  const id = normalizeEmail(teacherId);
+  const teacher = getAllTeachers()[id];
+  if (!teacher) return showNotification('Teacher not found', 'error');
+  const status = getTeacherLicenseStatus(teacher);
+  const tokenBalance = teacher.role === 'super_admin' || id === SUPER_ADMIN_EMAIL
+    ? 'Unlimited'
+    : String(getTeacherTokenBalance(teacher));
+  const pendingPackageLabel = teacher.tokenRequestedPackageKey
+    ? getTokenPackageLabel(teacher.tokenRequestedPackageKey)
+    : 'None';
+  let modal = document.getElementById('adminTeacherAccountModal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'adminTeacherAccountModal';
+  modal.className = 'student-result-modal';
+  const inner = document.createElement('div');
+  inner.className = 'card-beautiful admin-modal-card';
+  inner.style.width = 'min(680px, 94vw)';
+  inner.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h2">Teacher Account Details</div>
+        <div class="small">${escapeHtml(id)}</div>
+      </div>
+      <button id="closeAdminTeacherAccount" class="btn btn-ghost">Close</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <div class="small">Name</div>
+        <div style="font-weight:800;margin-top:6px">${escapeHtml(getTeacherDisplayName(teacher, { preferPlaceholder: true }))}</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <div class="small">Teacher ID</div>
+        <div style="font-weight:800;margin-top:6px;word-break:break-word">${escapeHtml(id)}</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <div class="small">Phone Number</div>
+        <div style="font-weight:800;margin-top:6px">${escapeHtml(getTeacherPhoneLabel(teacher))}</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <div class="small">Available Tokens</div>
+        <div style="font-weight:800;margin-top:6px">${escapeHtml(tokenBalance)}</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <div class="small">Access Status</div>
+        <div style="font-weight:800;margin-top:6px">${escapeHtml(status.label || 'Unknown')}</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <div class="small">Pending Request</div>
+        <div style="font-weight:800;margin-top:6px">${escapeHtml(pendingPackageLabel)}</div>
+      </div>
+    </div>
+    <div class="small" style="margin-top:14px;line-height:1.7">${escapeHtml(status.detail || status.summary || 'No additional account detail available.')}</div>
+  `;
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  document.getElementById('closeAdminTeacherAccount').onclick = () => modal.remove();
 }
 
 function canSetQuestions() {
@@ -4327,11 +4446,10 @@ function countAnsweredQuestionsInSection(section, answers = {}) {
 function encodeQuizToLink(q, options = {}) {
   const base = window.location.href.split('?')[0];
   if (!q || !q.id) return base;
-  const shareParam = `share=${encodeURIComponent(QUIZ_SHARE_PREVIEW_VERSION)}`;
   if (options.portable) {
-    return `${base}?q=${encodeURIComponent(q.id)}&${shareParam}&import=${encodeQuizToPortablePayload(q)}`;
+    return `${base}?q=${encodeURIComponent(q.id)}&import=${encodeQuizToPortablePayload(q)}`;
   }
-  return `${base}?q=${encodeURIComponent(q.id)}&${shareParam}`;
+  return `${base}?q=${encodeURIComponent(q.id)}`;
 }
 
 function parseQuizAccessInput(value) {
@@ -4696,7 +4814,7 @@ function render() {
   top.innerHTML = `
     <div class="container" style="display:flex;align-items:center;justify-content:space-between">
       <div style="display:flex;align-items:center;gap:12px">
-        <div style="width:44px;height:44px;border-radius:10px;background:linear-gradient(90deg,var(--primary),var(--primary-600));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800">OPE</div>
+        <img class="brand-logo" src="${escapeHtml(getAppLogoUrl())}" alt="OPE Assessor logo" />
         <div>
           <div class="title">OPE Assessor</div>
           <div class="small">Zero-friction assessments - privacy first</div>
@@ -5279,7 +5397,8 @@ function renderTeacherAuth() {
         save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
         localStorage.setItem(STORAGE_KEYS.teacherId, id);
         state.teacherId = id;
-        await openTeacherWorkspace(id === SUPER_ADMIN_EMAIL ? 'teacher.settings' : 'teacher', {
+        _pendingNewTeacherProfilePrompt = !!(createMode && id !== SUPER_ADMIN_EMAIL);
+        await openTeacherWorkspace(createMode || id === SUPER_ADMIN_EMAIL ? 'teacher.settings' : 'teacher', {
           pullSharedState: false
         });
       } catch (error) {
@@ -6129,17 +6248,28 @@ function renderStudentsView() {
 
 function renderSettingsView() {
   const teachers = getAllTeachers();
+  const currentTeacher = getCurrentTeacher() || {};
+  const teacherProfileNeedsAttention = !((currentTeacher.name || '').toString().trim()) || !((currentTeacher.phone || currentTeacher.phoneNumber || '').toString().trim());
   const teacherRows = Object.values(teachers).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   const container = document.createElement('div');
   container.innerHTML = `
     <div class="h1">Settings</div>
     <div class="small" style="margin-bottom:var(--space-3)">Tools for backups, access identity, and local delivery.</div>
+    ${!isSuperAdmin() && teacherProfileNeedsAttention ? `
+      <div class="card" style="margin-bottom:var(--space-3);border:1px solid #FDE68A;background:#FFFBEB">
+        <div class="h3">Complete Teacher Profile</div>
+        <div class="small" style="margin-top:8px;line-height:1.7">Add your full name and phone number now so they show correctly in Settings, correction messages, token requests, and the admin teacher list.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button id="completeTeacherProfilePrompt" class="btn btn-primary">Update Name & Phone</button>
+        </div>
+      </div>
+    ` : ''}
     <div class="settings-grid">
       <div class="card">
         <div class="h3">Teacher Identity</div>
         <div class="small">You are logged in with this teacher email ID. Your profile name signs correction messages.</div>
         <input class="input-beautiful" value="${escapeHtml(state.teacherId)}" readonly style="margin-top:12px" />
-        <div class="small" style="margin-top:10px;line-height:1.7">Name: <strong>${escapeHtml(getTeacherDisplayName(getCurrentTeacher(), { preferPlaceholder: true }))}</strong><br/>Phone: <strong>${escapeHtml(getTeacherPhoneLabel(getCurrentTeacher()))}</strong></div>
+        <div class="small" style="margin-top:10px;line-height:1.7">Name: <strong>${escapeHtml(getTeacherDisplayName(currentTeacher, { preferPlaceholder: true }))}</strong><br/>Phone: <strong>${escapeHtml(getTeacherPhoneLabel(currentTeacher))}</strong></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           <button id="copyTeacherId" class="btn btn-ghost">Copy Teacher ID</button>
           <button id="editTeacherProfileFromSettings" class="btn btn-primary">Edit Profile</button>
@@ -6201,16 +6331,16 @@ function renderSettingsView() {
     ${isSuperAdmin() ? `
       <div class="card" style="margin-top:var(--space-3)">
         <div class="card-header"><h3>Super Admin - Teacher Accounts</h3></div>
-        <div class="small" style="margin:12px 0">Manage teacher token access, unlimited device locks, and password resets.</div>
-        <input id="teacherSearch" class="input-beautiful" placeholder="Search teacher ID..." style="margin-bottom:12px" />
+        <div class="small" style="margin:12px 0">Teacher ID, name, and phone number stay visible here. Token balances stay inside the action dropdown.</div>
+        <input id="teacherSearch" class="input-beautiful" placeholder="Search teacher ID, name, or phone..." style="margin-bottom:12px" />
         <div class="table-wrap">
           <table class="table-dense">
-            <thead><tr><th>Teacher ID</th><th>Role</th><th>Access</th><th>Request</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Teacher ID</th><th>Name</th><th>Phone Number</th><th>Role</th><th>Access</th><th>Request</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody id="teacherAdminRows">${teacherRows.map(t => {
               const id = t.teacherId || t.email;
-              const status = getTeacherLicenseStatus(t);
-              return `<tr data-teacher-row="${escapeHtml(id)}"><td>${escapeHtml(id)}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(status.detail || status.label)}</td><td>${t.tokenRequestedAt ? new Date(t.tokenRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><div class="row-action-shell"><select class="input-beautiful row-action-select teacherAdminActionSelect" data-id="${escapeHtml(id)}"><option value="">Choose action</option><option value="view-exams">View Exams</option><option value="view-students">Students</option><option value="grant-license">Grant Tokens / Unlimited</option><option value="transfer-unlimited-device">Transfer Unlimited Device</option><option value="stop-license">Clear Unlimited</option><option value="reset-password">Reset Password</option><option value="change-id">Change ID</option></select><button class="btn btn-ghost btn-sm btnApplyTeacherAdminAction" data-id="${escapeHtml(id)}">Apply</button></div></td></tr>`;
-            }).join('') || '<tr><td colspan="6">No teachers yet.</td></tr>'}</tbody>
+              const rowSearch = [id, getTeacherDisplayName(t, { preferPlaceholder: true }), getTeacherPhoneLabel(t)].join(' ').toLowerCase();
+              return `<tr data-teacher-row="${escapeHtml(rowSearch)}"><td>${escapeHtml(id)}</td><td>${escapeHtml(getTeacherDisplayName(t, { preferPlaceholder: true }))}</td><td>${escapeHtml(getTeacherPhoneLabel(t))}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(getTeacherAdminAccessSummary(t))}</td><td>${t.tokenRequestedAt ? new Date(t.tokenRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><div class="row-action-shell"><select class="input-beautiful row-action-select teacherAdminActionSelect" data-id="${escapeHtml(id)}"><option value="">Choose action</option><option value="view-account">View Token Details</option><option value="view-exams">View Exams</option><option value="view-students">Students</option><option value="grant-license">Grant Tokens / Unlimited</option><option value="transfer-unlimited-device">Transfer Unlimited Device</option><option value="stop-license">Clear Unlimited</option><option value="reset-password">Reset Password</option><option value="change-id">Change ID</option></select><button class="btn btn-ghost btn-sm btnApplyTeacherAdminAction" data-id="${escapeHtml(id)}">Apply</button></div></td></tr>`;
+            }).join('') || '<tr><td colspan="8">No teachers yet.</td></tr>'}</tbody>
           </table>
         </div>
       </div>
@@ -6220,8 +6350,14 @@ function renderSettingsView() {
     document.getElementById('copyTeacherId').onclick = () => {
       copyTextToClipboard(state.teacherId, 'Teacher ID copied');
     };
+    const completeProfilePromptBtn = document.getElementById('completeTeacherProfilePrompt');
+    if (completeProfilePromptBtn) completeProfilePromptBtn.onclick = () => openTeacherProfileEditor();
     const editProfileBtn = document.getElementById('editTeacherProfileFromSettings');
     if (editProfileBtn) editProfileBtn.onclick = () => openTeacherProfileEditor();
+    if (_pendingNewTeacherProfilePrompt && !isSuperAdmin()) {
+      _pendingNewTeacherProfilePrompt = false;
+      setTimeout(() => openTeacherProfileEditor(), 0);
+    }
     const ownPasswordBtn = document.getElementById('saveOwnPassword');
     if (ownPasswordBtn) ownPasswordBtn.onclick = async () => {
       const teacher = getCurrentTeacher();
@@ -6405,7 +6541,9 @@ function renderSettingsView() {
       const action = actionSelect ? actionSelect.value : '';
       const id = normalizeEmail(ev.currentTarget.dataset.id);
       if (!action) return showNotification('Choose an admin action first', 'error');
-      if (action === 'view-exams') {
+      if (action === 'view-account') {
+        showAdminTeacherAccountDetails(id);
+      } else if (action === 'view-exams') {
         showAdminTeacherExams(id);
       } else if (action === 'view-students') {
         showAdminTeacherStudents(id);
@@ -7911,14 +8049,9 @@ function renderQuizTake() {
     };
 
     // submit button
-    document.getElementById('submitExam').onclick = ()=> {
-      let confirmed = false;
-      examSubmissionIntent.confirmOpen = true;
-      try {
-        confirmed = window.confirm('Submit exam now?');
-      } finally {
-        examSubmissionIntent.confirmOpen = false;
-      }
+    document.getElementById('submitExam').onclick = async ()=> {
+      if (examSubmissionIntent.confirmOpen || examSubmissionIntent.manualSubmitInFlight) return;
+      const confirmed = await showExamSubmitConfirmModal();
       if (!confirmed) return;
       examSubmissionIntent.manualSubmitInFlight = true;
       collectAndSubmit({ manual: true });
@@ -10720,7 +10853,7 @@ function applyGradeToSubmission(submission, grade) {
 function buildCertificateBrandMarkup() {
   return `
     <div class="cert-brand-lockup" aria-label="OPE Assessor logo">
-      <div class="cert-logo-badge"><span>OPE</span></div>
+      <div class="cert-logo-badge"><img class="cert-logo-image" src="${escapeHtml(getAppLogoUrl())}" alt="OPE Assessor logo" /></div>
       <div class="cert-logo-text">
         <strong>OPE Assessor</strong>
         <span>Verified Result Certificate</span>
@@ -11190,8 +11323,8 @@ function getCertificateResultCss() {
     .cert-inner:before{content:"";position:absolute;inset:10px;border:2px solid rgba(47,128,237,.22);border-radius:12px;pointer-events:none}
     .cert-header{text-align:center;padding:18px 16px 16px;position:relative;z-index:1;border-radius:22px;background:linear-gradient(135deg,rgba(238,248,255,.96) 0%,rgba(230,243,255,.92) 52%,rgba(244,250,255,.98) 100%);border:1px solid rgba(47,128,237,.16);box-shadow:0 12px 28px rgba(47,128,237,.10)}
     .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
-    .cert-logo-badge{width:72px;height:72px;border-radius:22px;border:4px solid #2F80ED;background:#ffffff;padding:5px}
-    .cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:16px;background:#ffffff;color:#2F80ED;font-size:28px;font-weight:900;letter-spacing:.05em}
+    .cert-logo-badge{width:72px;height:72px;border-radius:22px;background:#ffffff;box-shadow:0 14px 30px rgba(47,128,237,.16);overflow:hidden}
+    .cert-logo-image{display:block;width:100%;height:100%;object-fit:cover;border-radius:inherit}
     .cert-logo-text{text-align:left}
     .cert-logo-text strong{display:block;font-size:28px;line-height:1.05;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
     .cert-logo-text span{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#1F2937;margin-top:5px;font-weight:800}
@@ -11274,7 +11407,6 @@ function getCertificateResultCss() {
     @media(max-width:720px){
       .cert-inner{padding:18px 14px 16px}
       .cert-logo-badge{width:60px;height:60px;border-radius:18px}
-      .cert-logo-badge span{font-size:24px}
       .cert-logo-text{text-align:center}
       .cert-logo-text strong{font-size:22px}
       .cert-quiz-title{font-size:28px}
@@ -12508,7 +12640,55 @@ const examSubmissionIntent = {
 };
 
 function isManualExamSubmitFlowActive() {
-  return !!(examSubmissionIntent.confirmOpen || examSubmissionIntent.manualSubmitInFlight);
+  return !!examSubmissionIntent.manualSubmitInFlight;
+}
+
+function showExamSubmitConfirmModal() {
+  if (examSubmissionIntent.confirmOpen) return Promise.resolve(false);
+  examSubmissionIntent.confirmOpen = true;
+  return new Promise((resolve) => {
+    let closed = false;
+    let modal = document.getElementById('examSubmitConfirmModal');
+    if (modal) modal.remove();
+    modal = document.createElement('div');
+    modal.id = 'examSubmitConfirmModal';
+    modal.className = 'student-result-modal';
+    const card = document.createElement('div');
+    card.className = 'card-beautiful admin-modal-card';
+    card.style.width = 'min(520px, 92vw)';
+    card.innerHTML = `
+      <div class="page-heading">
+        <div>
+          <div class="h2">Submit Exam?</div>
+          <div class="small">Your answers will be saved and you will leave the exam screen immediately.</div>
+        </div>
+      </div>
+      <div class="small" style="line-height:1.7;margin-bottom:16px">Only continue if you are completely done. Cancel keeps you inside the exam without any penalty.</div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap">
+        <button id="cancelExamSubmitConfirm" class="btn btn-ghost">Cancel</button>
+        <button id="confirmExamSubmitConfirm" class="btn btn-primary">Submit Now</button>
+      </div>
+    `;
+    const close = (confirmed) => {
+      if (closed) return;
+      closed = true;
+      examSubmissionIntent.confirmOpen = false;
+      document.removeEventListener('keydown', onKeyDown);
+      try { modal.remove(); } catch (error) {}
+      resolve(!!confirmed);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') close(false);
+    };
+    modal.onclick = (event) => {
+      if (event.target === modal) close(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    document.getElementById('cancelExamSubmitConfirm').onclick = () => close(false);
+    document.getElementById('confirmExamSubmitConfirm').onclick = () => close(true);
+  });
 }
 
 function autoSubmit() {
