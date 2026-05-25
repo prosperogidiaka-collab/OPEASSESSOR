@@ -2,9 +2,13 @@
   "name": "OPE Assessor",
   "short_name": "OPE Assessor",
   "description": "Teacher dashboards, secure quiz links, verified student results, and correction-ready assessment sharing.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
   "orientation": "portrait-primary",
   "background_color": "#ffffff",
   "theme_color": "#0F1724",

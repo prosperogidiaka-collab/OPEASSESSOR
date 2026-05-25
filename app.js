@@ -33,7 +33,8 @@ const STORAGE_KEYS = {
   localAuth: 'ope_local_auth_v1',
   // Active session token returned by /api/auth/* endpoints. Only used to gate
   // mutation calls to /api/state/<key>; cleared on logout.
-  authSession: 'ope_auth_session_v1'
+  authSession: 'ope_auth_session_v1',
+  alertState: 'ope_alert_state_v1'
 };
 const NETWORK_SYNC_KEYS = [
   STORAGE_KEYS.quizzes,
@@ -72,6 +73,7 @@ const DEFAULT_SUPPORT_SETTINGS = {
   whatsapp: ''
 };
 const APP_DEVICE_ID_KEY = 'ope_app_device_id_v1';
+const APP_INSTALL_HELP_MESSAGE = 'To install OPE Assessor, open your browser menu and choose Install app or Add to Home screen.';
 const TOKEN_PRICE_PER_QUIZ = 1000;
 const TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS = 30;
 const TOKEN_PACKAGE_DEFINITIONS = {
@@ -376,7 +378,8 @@ const state = {
   teacherGuideTopic: '',
   classFilters: {},
   pdfBootstrap: null,
-  printRoute: null
+  printRoute: null,
+  pendingResultsFocus: null
 };
 let _didCompactSubmissions = false;
 let _didReclaimOrphanQuizzes = false;
@@ -423,6 +426,8 @@ let _resultsPulledForQuizId = '';
 let _pendingScrollRestore = null;
 let _overlayBodyLockObserver = null;
 let _pendingNewTeacherProfilePrompt = false;
+let deferredInstallPrompt = null;
+let installPromptEventsBound = false;
 
 function getPdfBootstrapPayload() {
   if (typeof window === 'undefined') return null;
@@ -472,6 +477,12 @@ function isQuotaExceededError(error) {
   return name === 'QuotaExceededError' || code === 22 || /quota/i.test(message);
 }
 
+function getAppStateStorage() {
+  if (typeof sessionStorage !== 'undefined') return sessionStorage;
+  if (typeof localStorage !== 'undefined') return localStorage;
+  return null;
+}
+
 function notifyStorageQuotaExceeded() {
   const now = Date.now();
   if ((now - lastStorageQuotaNoticeAt) < STORAGE_QUOTA_NOTICE_COOLDOWN_MS) return;
@@ -503,12 +514,19 @@ async function flushPendingNetworkWrites(keys = [], options = {}) {
 
 function writeLocalStorageValue(key, value) {
   if (key === STORAGE_KEYS.appState && skipAppStateStorageWritesForSession) return false;
-  try { localStorage[key] = JSON.stringify(value); return true; }
-  catch(e) {
-    if (key === STORAGE_KEYS.appState && isQuotaExceededError(e)) {
-      skipAppStateStorageWritesForSession = true;
+  if (key === STORAGE_KEYS.appState) {
+    const storage = getAppStateStorage();
+    if (!storage) return false;
+    try { storage[key] = JSON.stringify(value); return true; }
+    catch(e) {
+      if (isQuotaExceededError(e)) {
+        skipAppStateStorageWritesForSession = true;
+      }
       return false;
     }
+  }
+  try { localStorage[key] = JSON.stringify(value); return true; }
+  catch(e) {
     if (isQuotaExceededError(e)) {
       console.warn(`Local storage write skipped for ${key} because the browser quota is full.`);
     }
@@ -517,6 +535,12 @@ function writeLocalStorageValue(key, value) {
 }
 
 function readLocalStorageValue(key) {
+  if (key === STORAGE_KEYS.appState) {
+    const storage = getAppStateStorage();
+    if (!storage) return null;
+    try { return JSON.parse(storage[key] || 'null'); }
+    catch(e) { return null; }
+  }
   try { return JSON.parse(localStorage[key] || 'null'); }
   catch(e) { return null; }
 }
@@ -1025,11 +1049,7 @@ function bindNetworkSyncWindowEvents() {
   window.addEventListener('storage', (event) => {
     const changedKey = (event && event.key) || '';
     if (!changedKey || event.oldValue === event.newValue) return;
-    if (changedKey === STORAGE_KEYS.appState) {
-      applyPersistedAppUiState();
-      if (state.view !== 'take') render();
-      return;
-    }
+    if (changedKey === STORAGE_KEYS.appState) return;
     if (!NETWORK_SYNC_KEYS.includes(changedKey)) return;
     applySharedStateUiRefresh(true, { forceRender: true });
   });
@@ -1570,6 +1590,76 @@ function getSubmissionCorrectionShareMeta(submission = {}) {
 function isLikelyMobileDevice() {
   const ua = (navigator.userAgent || '').toLowerCase();
   return /android|iphone|ipad|ipod|mobile|windows phone/.test(ua);
+}
+
+function isStandaloneAppMode() {
+  if (typeof window === 'undefined') return false;
+  try {
+    return !!(
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+      || window.navigator.standalone
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+function shouldShowInstallAppButton() {
+  return typeof window !== 'undefined' && !isStandaloneAppMode();
+}
+
+function updateInstallAppButtons() {
+  if (typeof document === 'undefined') return;
+  const shouldShow = shouldShowInstallAppButton();
+  document.querySelectorAll('[data-install-app-button]').forEach((button) => {
+    button.onclick = () => { promptInstallApp(); };
+    button.hidden = !shouldShow;
+    button.style.display = shouldShow ? '' : 'none';
+  });
+}
+
+function bindInstallPromptEvents() {
+  if (installPromptEventsBound || typeof window === 'undefined') return;
+  installPromptEventsBound = true;
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    updateInstallAppButtons();
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    updateInstallAppButtons();
+    showNotification('OPE Assessor installed on this device.', 'success', 5000);
+  });
+  if (window.matchMedia) {
+    const media = window.matchMedia('(display-mode: standalone)');
+    if (media && typeof media.addEventListener === 'function') {
+      media.addEventListener('change', () => updateInstallAppButtons());
+    }
+  }
+}
+
+async function promptInstallApp() {
+  if (isStandaloneAppMode()) {
+    showNotification('OPE Assessor is already installed on this device.', 'info', 5000);
+    return true;
+  }
+  const promptEvent = deferredInstallPrompt;
+  if (!promptEvent) {
+    showNotification(APP_INSTALL_HELP_MESSAGE, 'info', 9000);
+    return false;
+  }
+  deferredInstallPrompt = null;
+  try {
+    await promptEvent.prompt();
+    if (promptEvent.userChoice) await promptEvent.userChoice.catch(() => null);
+  } catch (error) {
+    showNotification(APP_INSTALL_HELP_MESSAGE, 'info', 9000);
+    return false;
+  } finally {
+    updateInstallAppButtons();
+  }
+  return true;
 }
 
 function openWhatsappChat(phone, message = '') {
@@ -2654,6 +2744,7 @@ async function initializeApp() {
   migrateLegacyLocalTeacherPasswords();
   migrateAndNormalizeSubmissions();
   startOverlayBodyLockObserver();
+  bindInstallPromptEvents();
   const params = new URLSearchParams(window.location.search);
   const querySyncApiBaseUrl = normalizeApiBaseUrl(params.get('syncApiBaseUrl') || params.get('apiBaseUrl') || '');
   if (querySyncApiBaseUrl) setNetworkSyncApiBaseUrl(querySyncApiBaseUrl);
@@ -4800,6 +4891,8 @@ function render() {
     _lastHistoryView = state.view;
   }
   app.innerHTML = '';
+  const headerAlerts = isTeacherLoggedIn() || isSuperAdmin() ? buildTeacherAlerts() : [];
+  const unreadHeaderAlerts = getUnreadAlertCount(headerAlerts);
 
   // Topbar (updated with Home / Teacher / Student nav)
   const top = document.createElement('header');
@@ -4822,8 +4915,9 @@ function render() {
         </div>
         <div class="top-actions">
           <button id="openTeacherQuiz" class="btn btn-ghost btn-sm">Open Quiz</button>
+          ${shouldShowInstallAppButton() ? '<button id="topInstallApp" data-install-app-button class="btn btn-ghost btn-sm" type="button">Install App</button>' : ''}
           ${isTeacherLoggedIn() || isSuperAdmin() ? '<button id="topSupport" class="btn btn-ghost btn-sm" aria-label="Support">Support</button>' : ''}
-          ${isTeacherLoggedIn() || isSuperAdmin() ? '<button id="topAlerts" class="btn btn-ghost btn-sm" aria-label="Notifications">Alerts</button>' : ''}
+          ${isTeacherLoggedIn() || isSuperAdmin() ? `<button id="topAlerts" class="btn btn-ghost btn-sm${unreadHeaderAlerts ? ' has-unread' : ''}" aria-label="${unreadHeaderAlerts ? `${unreadHeaderAlerts} new alert${unreadHeaderAlerts === 1 ? '' : 's'}` : 'Notifications'}">Alerts${unreadHeaderAlerts ? ` <span class="alerts-pill">${unreadHeaderAlerts}</span>` : ''}</button>` : ''}
           <div class="small" id="userBadge">${escapeHtml(getTeacherUserBadgeLabel())}</div>
           ${isTeacherLoggedIn() ? '<button id="logoutTeacher" class="btn btn-ghost btn-sm">Logout</button>' : ''}
         </div>
@@ -4992,6 +5086,8 @@ function render() {
       restoreViewScrollState(null, { forceTop: true });
     }
     _lastRenderedView = state.view;
+    updateInstallAppButtons();
+    refreshAlertsButton(headerAlerts);
     persistAppUiState();
     syncOverlayBodyLock();
   }, 0);
@@ -5033,6 +5129,7 @@ function renderHomePage() {
         <p class="hero-subtitle">Build quizzes, organize question banks, monitor performance, and deliver private browser-based testing in one clean workflow.</p>
         <div class="hero-actions">
           <button id="homeGetStarted" class="btn-main hero-cta">Get Started</button>
+          <button id="homeInstallApp" class="btn btn-ghost" data-install-app-button type="button">Install App</button>
         </div>
         <div class="hero-metrics" aria-label="Platform highlights">
           <div class="hero-metric">
@@ -5138,8 +5235,207 @@ function renderHomePage() {
   `;
   setTimeout(() => {
     document.getElementById('homeGetStarted').onclick = () => { openTeacherWorkspace('teacher'); };
+    updateInstallAppButtons();
   }, 0);
   return wrapper;
+}
+
+function getAlertOwnerKey() {
+  return normalizeEmail(state.teacherId || getTeacherId() || 'guest');
+}
+
+function readAlertStateMap() {
+  const stored = readLocalStorageValue(STORAGE_KEYS.alertState);
+  return stored && typeof stored === 'object' ? stored : {};
+}
+
+function saveAlertStateMap(map = {}) {
+  writeLocalStorageValue(STORAGE_KEYS.alertState, map);
+}
+
+function getLastSeenAlertStamp() {
+  const ownerKey = getAlertOwnerKey();
+  if (!ownerKey) return 0;
+  const map = readAlertStateMap();
+  return Number(map[ownerKey] || 0);
+}
+
+function markAlertsSeen(alerts = []) {
+  const ownerKey = getAlertOwnerKey();
+  if (!ownerKey) return 0;
+  const latestStamp = (Array.isArray(alerts) ? alerts : []).reduce((maxStamp, alert) => {
+    if (!alert || !alert.notifyOnNew) return maxStamp;
+    return Math.max(maxStamp, Number(alert.stamp) || 0);
+  }, 0);
+  if (!latestStamp) return 0;
+  const map = readAlertStateMap();
+  if (latestStamp > Number(map[ownerKey] || 0)) {
+    map[ownerKey] = latestStamp;
+    saveAlertStateMap(map);
+  }
+  return latestStamp;
+}
+
+function getUnreadAlertCount(alerts = []) {
+  const lastSeen = getLastSeenAlertStamp();
+  return (Array.isArray(alerts) ? alerts : []).filter((alert) =>
+    alert && alert.notifyOnNew && (Number(alert.stamp) || 0) > lastSeen
+  ).length;
+}
+
+function buildSubmissionAlertAction(submission = {}, options = {}) {
+  return {
+    type: 'open-results',
+    quizId: submission.quizId || '',
+    submissionKey: submission.submissionId || buildSubmissionIdentity(submission),
+    openModal: !!options.openModal
+  };
+}
+
+function buildTeacherAlerts() {
+  const quizzes = getAllQuizzes();
+  const quizKeys = Object.keys(quizzes).filter((key) => {
+    const quiz = quizzes[key];
+    if (!quiz || isDeletedQuiz(quiz)) return false;
+    if (isSuperAdmin()) return true;
+    return state.teacherId && normalizeEmail(quiz.teacherId) === normalizeEmail(state.teacherId);
+  });
+  const submissions = getAllSubmissions().filter((submission) => quizKeys.includes(submission.quizId));
+  const now = Date.now();
+  const recentSubmissionWindowMs = 24 * 60 * 60 * 1000;
+  const teacher = getCurrentTeacher() || {};
+  const licence = getTeacherLicenseStatus(teacher);
+  const licenceStamp = getTeacherAccessStamp(teacher);
+  const alerts = [];
+
+  if (isTeacherLoggedIn()) {
+    if (!licence.active) {
+      alerts.push({
+        id: `license:${getAlertOwnerKey()}:${licenceStamp || 'pending'}`,
+        type: 'warning',
+        title: licence.label,
+        detail: licence.detail,
+        stamp: licenceStamp,
+        notifyOnNew: !!licenceStamp,
+        action: { type: 'license' }
+      });
+    }
+    const activeCount = quizKeys.filter((key) => {
+      const quiz = quizzes[key];
+      return (!quiz.scheduleStart || new Date(quiz.scheduleStart).getTime() <= now) && (!quiz.scheduleEnd || new Date(quiz.scheduleEnd).getTime() >= now);
+    }).length;
+    if (activeCount) {
+      alerts.push({
+        id: `active-exams:${activeCount}`,
+        type: 'info',
+        title: `${activeCount} active exam(s)`,
+        detail: 'These quizzes are currently available to students.',
+        stamp: 0,
+        notifyOnNew: false,
+        action: { type: 'teacher-quizzes' }
+      });
+    }
+  } else {
+    alerts.push({
+      id: 'guest-mode',
+      type: 'info',
+      title: 'Guest mode',
+      detail: 'Log in as a teacher to see exam and monitoring alerts.',
+      stamp: 0,
+      notifyOnNew: false,
+      action: null
+    });
+  }
+
+  submissions
+    .filter((submission) => {
+      const submittedAt = new Date(submission?.submittedAt || submission?.updatedAt || 0).getTime();
+      return submittedAt && submittedAt <= now && (now - submittedAt) <= recentSubmissionWindowMs;
+    })
+    .sort((left, right) => new Date(right?.submittedAt || right?.updatedAt || 0).getTime() - new Date(left?.submittedAt || left?.updatedAt || 0).getTime())
+    .slice(0, 10)
+    .forEach((submission) => {
+      const studentLabel = submission.name || submission.email || 'Student';
+      const quizLabel = quizzes[submission.quizId]?.title || submission.quizId || 'Quiz';
+      const submittedAtStamp = new Date(submission?.submittedAt || submission?.updatedAt || 0).getTime();
+      const submittedAtText = submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'Recently';
+      alerts.push({
+        id: `recent-submission:${submission.submissionId || buildSubmissionIdentity(submission)}`,
+        type: 'info',
+        title: 'Recent submission',
+        detail: `${studentLabel} submitted ${quizLabel} on ${submittedAtText}.`,
+        stamp: submittedAtStamp,
+        notifyOnNew: true,
+        action: buildSubmissionAlertAction(submission)
+      });
+    });
+
+  submissions.slice(-10).reverse().forEach((submission) => {
+    const monitoring = submission.monitoring || {};
+    const flags = [];
+    if (monitoring.tabSwitches) flags.push(`${monitoring.tabSwitches} tab switch(es)`);
+    if (monitoring.fullscreenExits) flags.push(`${monitoring.fullscreenExits} fullscreen exit(s)`);
+    if (monitoring.copyAttempts) flags.push(`${monitoring.copyAttempts} copy attempt(s)`);
+    if (monitoring.screenshotAttempts) flags.push(`${monitoring.screenshotAttempts} screenshot attempt(s)`);
+    if (!flags.length) return;
+    alerts.push({
+      id: `monitoring:${submission.submissionId || buildSubmissionIdentity(submission)}:${flags.join('|')}`,
+      type: 'warning',
+      title: submission.name || submission.email || 'Student alert',
+      detail: `${quizzes[submission.quizId]?.title || submission.quizId}: ${flags.join(', ')}`,
+      stamp: new Date(submission.updatedAt || submission.submittedAt || 0).getTime(),
+      notifyOnNew: true,
+      action: buildSubmissionAlertAction(submission)
+    });
+  });
+
+  const lastSeen = getLastSeenAlertStamp();
+  return alerts.map((alert) => ({
+    ...alert,
+    stamp: Number(alert.stamp) || 0,
+    isUnread: !!alert.notifyOnNew && (Number(alert.stamp) || 0) > lastSeen
+  }));
+}
+
+function refreshAlertsButton(alerts = null) {
+  const button = document.getElementById('topAlerts');
+  if (!button) return;
+  const currentAlerts = Array.isArray(alerts) ? alerts : buildTeacherAlerts();
+  const unreadCount = getUnreadAlertCount(currentAlerts);
+  button.classList.toggle('has-unread', unreadCount > 0);
+  button.innerHTML = unreadCount > 0 ? `Alerts <span class="alerts-pill">${unreadCount}</span>` : 'Alerts';
+  button.setAttribute('aria-label', unreadCount > 0 ? `${unreadCount} new alert${unreadCount === 1 ? '' : 's'}` : 'Notifications');
+}
+
+function openAlertDestination(alert = null) {
+  if (!alert || !alert.action) return;
+  const modal = document.getElementById('alertsPanel');
+  if (modal) modal.remove();
+  const action = alert.action;
+  if (action.type === 'license') {
+    showLicenseRequired();
+    return;
+  }
+  if (action.type === 'teacher-quizzes') {
+    state.view = 'teacher.quizzes';
+    render();
+    return;
+  }
+  if (action.type === 'open-results') {
+    const quiz = getAllQuizzes()[action.quizId];
+    if (!quiz) {
+      showNotification('That alert item is no longer available.', 'warning', 6000);
+      return;
+    }
+    state.currentQuiz = quiz;
+    state.pendingResultsFocus = {
+      quizId: quiz.id,
+      submissionKey: action.submissionKey || '',
+      openModal: !!action.openModal
+    };
+    state.view = 'teacher.results';
+    render();
+  }
 }
 
 function renderAdminAuth() {
@@ -5204,58 +5500,7 @@ function showAlertsPanel() {
   modal.style.alignItems = 'flex-start';
   modal.style.justifyContent = 'flex-end';
   modal.style.padding = '72px 24px 24px';
-
-  const quizzes = getAllQuizzes();
-  const quizKeys = Object.keys(quizzes).filter((k) => {
-    const quiz = quizzes[k];
-    if (!quiz || isDeletedQuiz(quiz)) return false;
-    if (isSuperAdmin()) return true;
-    return state.teacherId && normalizeEmail(quiz.teacherId) === normalizeEmail(state.teacherId);
-  });
-  const submissions = getAllSubmissions().filter(s => quizKeys.includes(s.quizId));
-  const now = Date.now();
-  const recentSubmissionWindowMs = 24 * 60 * 60 * 1000;
-  const alerts = [];
-
-  if (isTeacherLoggedIn()) {
-    const licence = getTeacherLicenseStatus();
-    if (!licence.active) alerts.push({ type: 'warning', title: licence.label, detail: licence.detail });
-    const activeCount = quizKeys.filter(k => {
-      const q = quizzes[k];
-      return (!q.scheduleStart || new Date(q.scheduleStart).getTime() <= now) && (!q.scheduleEnd || new Date(q.scheduleEnd).getTime() >= now);
-    }).length;
-    if (activeCount) alerts.push({ type: 'info', title: `${activeCount} active exam(s)`, detail: 'These quizzes are currently available to students.' });
-  } else {
-    alerts.push({ type: 'info', title: 'Guest mode', detail: 'Log in as a teacher to see exam and monitoring alerts.' });
-  }
-
-  submissions
-    .filter((submission) => {
-      const submittedAt = new Date(submission?.submittedAt || submission?.updatedAt || 0).getTime();
-      return submittedAt && submittedAt <= now && (now - submittedAt) <= recentSubmissionWindowMs;
-    })
-    .sort((left, right) => new Date(right?.submittedAt || right?.updatedAt || 0).getTime() - new Date(left?.submittedAt || left?.updatedAt || 0).getTime())
-    .slice(0, 10)
-    .forEach((submission) => {
-      const studentLabel = submission.name || submission.email || 'Student';
-      const quizLabel = quizzes[submission.quizId]?.title || submission.quizId || 'Quiz';
-      const submittedAtText = submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'Recently';
-      alerts.push({
-        type: 'info',
-        title: 'Recent submission',
-        detail: `${studentLabel} submitted ${quizLabel} on ${submittedAtText}.`
-      });
-    });
-
-  submissions.slice(-10).reverse().forEach(s => {
-    const m = s.monitoring || {};
-    const flags = [];
-    if (m.tabSwitches) flags.push(`${m.tabSwitches} tab switch(es)`);
-    if (m.fullscreenExits) flags.push(`${m.fullscreenExits} fullscreen exit(s)`);
-    if (m.copyAttempts) flags.push(`${m.copyAttempts} copy attempt(s)`);
-    if (m.screenshotAttempts) flags.push(`${m.screenshotAttempts} screenshot attempt(s)`);
-    if (flags.length) alerts.push({ type: 'warning', title: s.name || s.email || 'Student alert', detail: `${quizzes[s.quizId]?.title || s.quizId}: ${flags.join(', ')}` });
-  });
+  const alerts = buildTeacherAlerts();
 
   const inner = document.createElement('div');
   inner.className = 'card-beautiful';
@@ -5269,15 +5514,26 @@ function showAlertsPanel() {
     </div>
     <div class="small" style="margin-bottom:12px">Exam notices, token status, recent quiz submissions from the last 24 hours, and recent monitoring warnings.</div>
     ${alerts.map(a => `
-      <div class="alert-item alert-${escapeHtml(a.type)}">
-        <strong>${escapeHtml(a.title)}</strong>
+      <div class="alert-item alert-${escapeHtml(a.type)}${a.action ? ' alert-clickable' : ''}"${a.action ? ` data-alert-id="${escapeHtml(a.id)}"` : ''}>
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+          <strong>${escapeHtml(a.title)}</strong>
+          ${a.isUnread ? '<span class="alert-new-badge">New</span>' : ''}
+        </div>
         <div class="small">${escapeHtml(a.detail)}</div>
       </div>
     `).join('') || '<div class="small">No alerts right now.</div>'}
   `;
   modal.appendChild(inner);
   document.body.appendChild(modal);
+  markAlertsSeen(alerts);
+  refreshAlertsButton(alerts);
   document.getElementById('closeAlertsPanel').onclick = () => modal.remove();
+  inner.querySelectorAll('[data-alert-id]').forEach((node) => {
+    node.onclick = () => {
+      const alert = alerts.find((item) => item.id === node.dataset.alertId);
+      openAlertDestination(alert);
+    };
+  });
   modal.onclick = (ev) => { if (ev.target === modal) modal.remove(); };
 }
 
@@ -12319,6 +12575,21 @@ function renderResultsView() {
             row.style.outline = '1px solid #BFDBFE';
           };
         });
+        const pendingFocus = state.pendingResultsFocus;
+        if (pendingFocus && String(pendingFocus.quizId || '') === String(q.id || '')) {
+          const targetRow = list.querySelector(`[data-student-row="${encodeURIComponent(pendingFocus.submissionKey || '')}"]`);
+          if (targetRow) {
+            targetRow.click();
+            targetRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            if (pendingFocus.openModal) {
+              const targetSubmission = findSubmissionBySubmissionKey(q.id, pendingFocus.submissionKey);
+              if (targetSubmission) {
+                setTimeout(() => showStudentResultModalFromSubmission(q, targetSubmission, true), 120);
+              }
+            }
+            state.pendingResultsFocus = null;
+          }
+        }
         if (typeof window.__opeWireSubmissionButtons === 'function') window.__opeWireSubmissionButtons();
       };
       renderSubmissionTable();
