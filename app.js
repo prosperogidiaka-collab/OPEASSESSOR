@@ -73,7 +73,7 @@ const DEFAULT_SUPPORT_SETTINGS = {
   whatsapp: ''
 };
 const APP_DEVICE_ID_KEY = 'ope_app_device_id_v1';
-const APP_LOGO_SRC = '/ope-icon-192.png';
+const APP_LOGO_SRC = '/ope-icon-192.png?v=20260525-attached-approved';
 const APP_INSTALL_HELP_MESSAGE = 'To install OPE Assessor, open your browser menu and choose Install app or Add to Home screen.';
 const TOKEN_PRICE_PER_QUIZ = 1000;
 const TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS = 30;
