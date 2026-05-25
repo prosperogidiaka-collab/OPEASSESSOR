@@ -73,7 +73,7 @@ const DEFAULT_SUPPORT_SETTINGS = {
   whatsapp: ''
 };
 const APP_DEVICE_ID_KEY = 'ope_app_device_id_v1';
-const APP_LOGO_SRC = '/ope-icon-192.png?v=20260525-attached-approved';
+const APP_LOGO_SRC = '/ope-icon-192.png?v=20260525-attached-approved-2';
 const APP_INSTALL_HELP_MESSAGE = 'To install OPE Assessor, open your browser menu and choose Install app or Add to Home screen.';
 const TOKEN_PRICE_PER_QUIZ = 1000;
 const TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS = 30;
@@ -429,11 +429,26 @@ let _overlayBodyLockObserver = null;
 let _pendingNewTeacherProfilePrompt = false;
 let deferredInstallPrompt = null;
 let installPromptEventsBound = false;
+let _startupSplashHidden = false;
 
 function getPdfBootstrapPayload() {
   if (typeof window === 'undefined') return null;
   const payload = window.__OPE_PDF_BOOTSTRAP__;
   return payload && typeof payload === 'object' ? payload : null;
+}
+
+function hideStartupSplash() {
+  if (_startupSplashHidden || typeof document === 'undefined') return;
+  const splash = document.getElementById('startupSplash');
+  if (!splash) {
+    _startupSplashHidden = true;
+    return;
+  }
+  _startupSplashHidden = true;
+  splash.classList.add('hidden');
+  setTimeout(() => {
+    try { splash.remove(); } catch (error) {}
+  }, 260);
 }
 const _viewScrollState = {};
 let _calculatorMemory = 0;
@@ -5091,6 +5106,7 @@ function render() {
     refreshAlertsButton(headerAlerts);
     persistAppUiState();
     syncOverlayBodyLock();
+    hideStartupSplash();
   }, 0);
 }
 

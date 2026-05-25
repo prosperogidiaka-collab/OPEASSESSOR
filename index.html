@@ -9,8 +9,8 @@
     <meta property="og:site_name" content="OPE Assessor">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://opeassessor.pages.dev/">
-    <meta property="og:image" content="https://opeassessor.pages.dev/summary-preview.png?v=20260525-attached-approved">
-    <meta property="og:image:secure_url" content="https://opeassessor.pages.dev/summary-preview.png?v=20260525-attached-approved">
+    <meta property="og:image" content="https://opeassessor.pages.dev/summary-preview.png?v=20260525-attached-approved-3">
+    <meta property="og:image:secure_url" content="https://opeassessor.pages.dev/summary-preview.png?v=20260525-attached-approved-3">
     <meta property="og:image:type" content="image/png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -18,13 +18,13 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="OPE Assessor">
     <meta name="twitter:description" content="Teacher dashboards, secure quiz links, verified student results, and correction-ready assessment sharing.">
-    <meta name="twitter:image" content="https://opeassessor.pages.dev/summary-preview.png?v=20260525-attached-approved">
+    <meta name="twitter:image" content="https://opeassessor.pages.dev/summary-preview.png?v=20260525-attached-approved-3">
     <meta name="theme-color" content="#0F1724">
     <title>OPE Assessor</title>
     <link rel="canonical" href="https://opeassessor.pages.dev/">
-    <link rel="icon" type="image/png" href="/ope-icon-192.png?v=20260525-attached-approved">
-    <link rel="apple-touch-icon" href="/ope-icon-192.png?v=20260525-attached-approved">
-    <link rel="manifest" href="manifest.json?v=20260525-attached-approved">
+    <link rel="icon" type="image/png" href="/ope-icon-192.png?v=20260525-attached-approved-3">
+    <link rel="apple-touch-icon" href="/ope-icon-192.png?v=20260525-attached-approved-3">
+    <link rel="manifest" href="manifest.json?v=20260525-attached-approved-3">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css?v=20260511-button-feedback">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
@@ -130,9 +130,22 @@ a{color:var(--primary)}
 .fab-palette{position:fixed;right:18px;bottom:18px;width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--primary);color:#fff;box-shadow:0 8px 22px rgba(14,165,233,0.18);z-index:40}
 
 /* Toast & utilities reuse existing notification styles */
+.startup-splash{position:fixed;inset:0;background:#ffffff;display:flex;align-items:center;justify-content:center;z-index:99999;transition:opacity .22s ease,visibility .22s ease}
+.startup-splash.hidden{opacity:0;visibility:hidden;pointer-events:none}
+.startup-splash-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center}
+.startup-splash-mark{width:min(44vw, 236px);height:min(44vw, 236px);object-fit:contain;display:block}
+.startup-splash-title{font-size:clamp(24px, 5.8vw, 38px);line-height:1.08;font-weight:800;color:#0F1724;letter-spacing:.01em}
+.startup-splash-copy{font-size:clamp(12px, 3.2vw, 16px);line-height:1.5;color:#5B6474;max-width:28ch}
     </style>
 </head>
 <body class="">
+  <div id="startupSplash" class="startup-splash" aria-hidden="true">
+    <div class="startup-splash-card">
+      <img class="startup-splash-mark" src="/ope-icon-512.png?v=20260525-attached-approved-3" alt="OPE Assessor logo">
+      <div class="startup-splash-title">OPE Assessor</div>
+      <div class="startup-splash-copy">Teacher dashboards, secure quiz links, and verified student results.</div>
+    </div>
+  </div>
   <!-- Ensure app root exists and layout will be driven by app.js -->
   <div id="app"></div>
 
