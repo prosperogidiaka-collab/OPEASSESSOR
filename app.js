@@ -73,7 +73,7 @@ const DEFAULT_SUPPORT_SETTINGS = {
   whatsapp: ''
 };
 const APP_DEVICE_ID_KEY = 'ope_app_device_id_v1';
-const APP_LOGO_SRC = '/ope-icon-192.png?v=20260525-attached-approved-2';
+const APP_LOGO_SRC = '/ope-icon-192.png?v=20260525-attached-approved-3';
 const APP_INSTALL_HELP_MESSAGE = 'To install OPE Assessor, open your browser menu and choose Install app or Add to Home screen.';
 const TOKEN_PRICE_PER_QUIZ = 1000;
 const TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS = 30;
@@ -4931,7 +4931,6 @@ function render() {
         </div>
         <div class="top-actions">
           <button id="openTeacherQuiz" class="btn btn-ghost btn-sm">Open Quiz</button>
-          ${shouldShowInstallAppButton() ? '<button id="topInstallApp" data-install-app-button class="btn btn-ghost btn-sm" type="button">Install App</button>' : ''}
           ${isTeacherLoggedIn() || isSuperAdmin() ? '<button id="topSupport" class="btn btn-ghost btn-sm" aria-label="Support">Support</button>' : ''}
           ${isTeacherLoggedIn() || isSuperAdmin() ? `<button id="topAlerts" class="btn btn-ghost btn-sm${unreadHeaderAlerts ? ' has-unread' : ''}" aria-label="${unreadHeaderAlerts ? `${unreadHeaderAlerts} new alert${unreadHeaderAlerts === 1 ? '' : 's'}` : 'Notifications'}">Alerts${unreadHeaderAlerts ? ` <span class="alerts-pill">${unreadHeaderAlerts}</span>` : ''}</button>` : ''}
           <div class="small" id="userBadge">${escapeHtml(getTeacherUserBadgeLabel())}</div>

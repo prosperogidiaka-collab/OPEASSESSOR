@@ -25,6 +25,13 @@
     <link rel="icon" type="image/png" href="/ope-icon-192.png?v=20260525-attached-approved-3">
     <link rel="apple-touch-icon" href="/ope-icon-192.png?v=20260525-attached-approved-3">
     <link rel="manifest" href="manifest.json?v=20260525-attached-approved-3">
+    <script>
+      try {
+        if ((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone) {
+          document.documentElement.classList.add('ope-standalone-app');
+        }
+      } catch (error) {}
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css?v=20260511-button-feedback">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
@@ -130,7 +137,8 @@ a{color:var(--primary)}
 .fab-palette{position:fixed;right:18px;bottom:18px;width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--primary);color:#fff;box-shadow:0 8px 22px rgba(14,165,233,0.18);z-index:40}
 
 /* Toast & utilities reuse existing notification styles */
-.startup-splash{position:fixed;inset:0;background:#ffffff;display:flex;align-items:center;justify-content:center;z-index:99999;transition:opacity .22s ease,visibility .22s ease}
+.startup-splash{position:fixed;inset:0;background:#ffffff;display:none;align-items:center;justify-content:center;z-index:99999;transition:opacity .22s ease,visibility .22s ease}
+html.ope-standalone-app .startup-splash{display:flex}
 .startup-splash.hidden{opacity:0;visibility:hidden;pointer-events:none}
 .startup-splash-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center}
 .startup-splash-mark{width:min(44vw, 236px);height:min(44vw, 236px);object-fit:contain;display:block}
@@ -164,7 +172,7 @@ a{color:var(--primary)}
   <script src="config.js?v=20260514f-storage-quota-fallback"></script>
   <script src="repository.js?v=20260514f-storage-quota-fallback"></script>
   <script src="presenter.js?v=20260514f-storage-quota-fallback"></script>
-  <script src="app.js?v=20260514f-storage-quota-fallback"></script>
+  <script src="app.js?v=20260525-pwa-splash-only"></script>
   
   <script>
       // Initialize shared-state sync before first render when available
