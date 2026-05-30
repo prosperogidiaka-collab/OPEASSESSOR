@@ -385,6 +385,68 @@ const state = {
 let _didCompactSubmissions = false;
 let _didReclaimOrphanQuizzes = false;
 let _didFlushSubmissionOutbox = false;
+// Run a reclaim pass once per session to remap quizzes to owners so they
+// immediately appear in teacher/admin dashboards after a data restore.
+try {
+  if (!_didReclaimOrphanQuizzes) {
+    const reclaimed = reclaimAllQuizzesToOwners();
+    _didReclaimOrphanQuizzes = true;
+    if (reclaimed && reclaimed > 0) showNotification(`${reclaimed} quiz(es) reassigned to owners for visibility`, 'success', 7000);
+  }
+} catch (e) {}
+// Reclaim quizzes: ensure quizzes map to known teachers or admin without
+// modifying other quiz fields. This runs once per session to restore
+// visibility after data restore/clear operations.
+function reclaimAllQuizzesToOwners() {
+  try {
+    const all = getAllQuizzes({ includeDeleted: true });
+    const teachers = getAllTeachers() || {};
+    const teacherKeys = Object.keys(teachers).map(k => normalizeEmail(k));
+    const next = { ...all };
+    let changed = 0;
+    Object.keys(all).forEach((k) => {
+      const q = all[k] || {};
+      const rawOwner = (q.teacherId || q.sourceTeacherId || '').toString().trim();
+      const owner = normalizeEmail(rawOwner);
+      // If already points to a known teacher or admin, normalize and keep.
+      if (owner && (teacherKeys.includes(owner) || owner === SUPER_ADMIN_EMAIL)) {
+        if ((q.teacherId || '') !== owner) {
+          next[k] = { ...q, teacherId: owner };
+          changed += 1;
+        }
+        return;
+      }
+      // Try to find a matching teacher object by email-like fields
+      let matchedKey = '';
+      Object.keys(teachers).forEach((tk) => {
+        if (matchedKey) return;
+        const t = teachers[tk] || {};
+        const tEmails = [t.email, t.teacherId, t.id, tk].filter(Boolean).map(x => normalizeEmail(x));
+        if (owner && tEmails.includes(owner)) matchedKey = normalizeEmail(tk);
+      });
+      if (matchedKey) {
+        next[k] = { ...q, teacherId: matchedKey };
+        changed += 1;
+        return;
+      }
+      // If quiz had no owner but the quiz indicates admin-sourced flags,
+      // assign to SUPER_ADMIN_EMAIL to surface admin templates.
+      if (!owner && q.isAdminTemplate) {
+        next[k] = { ...q, teacherId: SUPER_ADMIN_EMAIL };
+        changed += 1;
+        return;
+      }
+      // Leave quizzes alone if we couldn't confidently map them.
+    });
+    if (changed) {
+      saveAllQuizzes(next, { skipNetworkSync: true });
+      try { render(); } catch (e) {}
+    }
+    return changed;
+  } catch (e) {
+    return 0;
+  }
+}
 // Session-only safety net for devices whose localStorage is too full to hold a
 // quiz's submissions: pullQuizSubmissionsFromCloud() parks that quiz's cloud
 // copy here (keyed by quizId) so the Results view still renders it. Empty in the
