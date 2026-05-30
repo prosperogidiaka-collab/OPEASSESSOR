@@ -6554,7 +6554,11 @@ function renderSettingsView() {
       <div class="card">
         <div class="h3">Data Backup</div>
         <div class="small">Download all quizzes and submissions stored in this browser.</div>
-        <button id="downloadBackup" class="btn btn-primary" style="margin-top:12px">Download Backup</button>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button id="downloadBackup" class="btn btn-primary">Download Backup</button>
+          <button id="importBackup" class="btn btn-ghost">Import Backup</button>
+          <input type="file" id="importBackupInput" accept="application/json" style="display:none" />
+        </div>
       </div>
       <div class="card">
         <div class="h3">Cloud Sync</div>
@@ -6667,6 +6671,40 @@ function renderSettingsView() {
       }
       showNotification('Backup downloaded', 'success');
     };
+    // Import backup handler: open file picker, parse JSON, validate, and restore keys
+    const importBtn = document.getElementById('importBackup');
+    const importInput = document.getElementById('importBackupInput');
+    if (importBtn && importInput) {
+      importBtn.onclick = () => importInput.click();
+      importInput.onchange = () => {
+        const file = (importInput.files && importInput.files[0]) || null;
+        if (!file) return;
+        if (!confirmTeacherAction('Importing a backup will replace local quizzes and submissions. Continue?')) { importInput.value = ''; return; }
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const txt = (ev && ev.target && ev.target.result) ? ev.target.result : null;
+            const payload = txt ? JSON.parse(String(txt)) : null;
+            if (!payload || typeof payload !== 'object') throw new Error('Invalid backup format');
+            const quizzes = payload.quizzes || null;
+            const submissions = payload.submissions || null;
+            if (!quizzes || !submissions) throw new Error('Backup missing quizzes or submissions');
+            const ok1 = writeLocalStorageValue(STORAGE_KEYS.quizzes, quizzes);
+            const ok2 = writeLocalStorageValue(STORAGE_KEYS.submissions, submissions);
+            if (!ok1 || !ok2) return showNotification('Could not write backup to storage (quota or error)', 'error', 8000);
+            showNotification('Backup imported', 'success', 5000);
+            try { render(); } catch (e) { /* ignore */ }
+          } catch (err) {
+            console.error(err);
+            showNotification('Invalid backup file', 'error', 8000);
+          } finally {
+            importInput.value = '';
+          }
+        };
+        reader.onerror = () => { showNotification('Could not read file', 'error'); importInput.value = ''; };
+        reader.readAsText(file);
+      };
+    }
     const syncApiBaseUrlInput = document.getElementById('syncApiBaseUrlInput');
     const syncServerStatusText = document.getElementById('syncServerStatusText');
     const renderSyncServerStatus = (status) => {
