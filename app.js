@@ -6611,6 +6611,10 @@ function renderSettingsView() {
             <button id="importPortableQuizBtn" class="btn btn-primary">Import Quiz</button>
           </div>
         </div>
+        <div style="margin-top:12px">
+          <button id="adoptUnownedQuizzesBtn" class="btn btn-ghost">Restore quizzes to my account</button>
+          <div class="small" style="margin-top:8px">Assign any unowned or orphaned quizzes on this device to your teacher account so they appear in your dashboard.</div>
+        </div>
       </div>
       <div class="card">
         <div class="h3">Cloud Sync</div>
@@ -6803,6 +6807,34 @@ function renderSettingsView() {
         portableQuizInput.value = '';
       };
     }
+      const adoptBtn = document.getElementById('adoptUnownedQuizzesBtn');
+      if (adoptBtn) {
+        adoptBtn.onclick = () => {
+          const current = normalizeEmail(state.teacherId || getTeacherId());
+          if (!current) return showNotification('Teacher ID not set. Log in first.', 'error');
+          if (!confirmTeacherAction('Assign any unowned or orphaned quizzes on this device to your account?')) return;
+          const all = getAllQuizzes({ includeDeleted: true });
+          const teachers = getAllTeachers();
+          let changed = 0;
+          const next = { ...all };
+          Object.keys(all).forEach((k) => {
+            const q = all[k] || {};
+            const owner = normalizeEmail(q.teacherId || '');
+            // Adopt if no owner or owner not present in teachers map (or empty)
+            if (!owner || (owner && owner !== SUPER_ADMIN_EMAIL && !Object.prototype.hasOwnProperty.call(teachers, owner))) {
+              next[k] = { ...q, teacherId: current };
+              changed += 1;
+            }
+          });
+          if (changed) {
+            saveAllQuizzes(next, { skipNetworkSync: true });
+            showNotification(`${changed} quiz(es) restored to your account`, 'success', 7000);
+            try { render(); } catch (e) {}
+          } else {
+            showNotification('No unowned or orphaned quizzes found to restore', 'info', 5000);
+          }
+        };
+      }
     const syncServerStatusText = document.getElementById('syncServerStatusText');
     const renderSyncServerStatus = (status) => {
       if (!syncServerStatusText) return;
