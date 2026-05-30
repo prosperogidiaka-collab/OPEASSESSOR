@@ -385,68 +385,6 @@ const state = {
 let _didCompactSubmissions = false;
 let _didReclaimOrphanQuizzes = false;
 let _didFlushSubmissionOutbox = false;
-// Run a reclaim pass once per session to remap quizzes to owners so they
-// immediately appear in teacher/admin dashboards after a data restore.
-try {
-  if (!_didReclaimOrphanQuizzes) {
-    const reclaimed = reclaimAllQuizzesToOwners();
-    _didReclaimOrphanQuizzes = true;
-    if (reclaimed && reclaimed > 0) showNotification(`${reclaimed} quiz(es) reassigned to owners for visibility`, 'success', 7000);
-  }
-} catch (e) {}
-// Reclaim quizzes: ensure quizzes map to known teachers or admin without
-// modifying other quiz fields. This runs once per session to restore
-// visibility after data restore/clear operations.
-function reclaimAllQuizzesToOwners() {
-  try {
-    const all = getAllQuizzes({ includeDeleted: true });
-    const teachers = getAllTeachers() || {};
-    const teacherKeys = Object.keys(teachers).map(k => normalizeEmail(k));
-    const next = { ...all };
-    let changed = 0;
-    Object.keys(all).forEach((k) => {
-      const q = all[k] || {};
-      const rawOwner = (q.teacherId || q.sourceTeacherId || '').toString().trim();
-      const owner = normalizeEmail(rawOwner);
-      // If already points to a known teacher or admin, normalize and keep.
-      if (owner && (teacherKeys.includes(owner) || owner === SUPER_ADMIN_EMAIL)) {
-        if ((q.teacherId || '') !== owner) {
-          next[k] = { ...q, teacherId: owner };
-          changed += 1;
-        }
-        return;
-      }
-      // Try to find a matching teacher object by email-like fields
-      let matchedKey = '';
-      Object.keys(teachers).forEach((tk) => {
-        if (matchedKey) return;
-        const t = teachers[tk] || {};
-        const tEmails = [t.email, t.teacherId, t.id, tk].filter(Boolean).map(x => normalizeEmail(x));
-        if (owner && tEmails.includes(owner)) matchedKey = normalizeEmail(tk);
-      });
-      if (matchedKey) {
-        next[k] = { ...q, teacherId: matchedKey };
-        changed += 1;
-        return;
-      }
-      // If quiz had no owner but the quiz indicates admin-sourced flags,
-      // assign to SUPER_ADMIN_EMAIL to surface admin templates.
-      if (!owner && q.isAdminTemplate) {
-        next[k] = { ...q, teacherId: SUPER_ADMIN_EMAIL };
-        changed += 1;
-        return;
-      }
-      // Leave quizzes alone if we couldn't confidently map them.
-    });
-    if (changed) {
-      saveAllQuizzes(next, { skipNetworkSync: true });
-      try { render(); } catch (e) {}
-    }
-    return changed;
-  } catch (e) {
-    return 0;
-  }
-}
 // Session-only safety net for devices whose localStorage is too full to hold a
 // quiz's submissions: pullQuizSubmissionsFromCloud() parks that quiz's cloud
 // copy here (keyed by quizId) so the Results view still renders it. Empty in the
@@ -6673,14 +6611,7 @@ function renderSettingsView() {
             <button id="importPortableQuizBtn" class="btn btn-primary">Import Quiz</button>
           </div>
         </div>
-        <div style="margin-top:12px">
-          <button id="adoptUnownedQuizzesBtn" class="btn btn-ghost">Restore quizzes to my account</button>
-          <div class="small" style="margin-top:8px">Assign any unowned or orphaned quizzes on this device to your teacher account so they appear in your dashboard.</div>
-        </div>
-        <div style="margin-top:8px">
-          <button id="exportAdminQuizzesBtn" class="btn btn-ghost">Export Admin Quizzes</button>
-          <div class="small" style="margin-top:6px">Download any quizzes owned by the admin from this browser's storage.</div>
-        </div>
+        
       </div>
       <div class="card">
         <div class="h3">Cloud Sync</div>
@@ -6873,34 +6804,7 @@ function renderSettingsView() {
         portableQuizInput.value = '';
       };
     }
-      const adoptBtn = document.getElementById('adoptUnownedQuizzesBtn');
-      if (adoptBtn) {
-        adoptBtn.onclick = () => {
-          const current = normalizeEmail(state.teacherId || getTeacherId());
-          if (!current) return showNotification('Teacher ID not set. Log in first.', 'error');
-          if (!confirmTeacherAction('Assign any unowned or orphaned quizzes on this device to your account?')) return;
-          const all = getAllQuizzes({ includeDeleted: true });
-          const teachers = getAllTeachers();
-          let changed = 0;
-          const next = { ...all };
-          Object.keys(all).forEach((k) => {
-            const q = all[k] || {};
-            const owner = normalizeEmail(q.teacherId || '');
-            // Adopt if no owner or owner not present in teachers map (or empty)
-            if (!owner || (owner && owner !== SUPER_ADMIN_EMAIL && !Object.prototype.hasOwnProperty.call(teachers, owner))) {
-              next[k] = { ...q, teacherId: current };
-              changed += 1;
-            }
-          });
-          if (changed) {
-            saveAllQuizzes(next, { skipNetworkSync: true });
-            showNotification(`${changed} quiz(es) restored to your account`, 'success', 7000);
-            try { render(); } catch (e) {}
-          } else {
-            showNotification('No unowned or orphaned quizzes found to restore', 'info', 5000);
-          }
-        };
-      }
+      
     const syncServerStatusText = document.getElementById('syncServerStatusText');
     const renderSyncServerStatus = (status) => {
       if (!syncServerStatusText) return;
@@ -7385,66 +7289,7 @@ function renderTeacherGuideView() {
         'Admins can open Support and update the live support email and WhatsApp number from there.'
       ]
     }
-    const exportAdminBtn = document.getElementById('exportAdminQuizzesBtn');
-    if (exportAdminBtn) {
-      exportAdminBtn.onclick = () => {
-        try {
-          const admin = SUPER_ADMIN_EMAIL;
-          const found = {};
-          // 1) from in-memory / stored quizzes via accessor
-          try {
-            const all = getAllQuizzes({ includeDeleted: true }) || {};
-            Object.keys(all).forEach(k => {
-              const q = all[k] || {};
-              if (((q.teacherId||'') + '').toLowerCase() === admin) found[q.id || k] = q;
-            });
-          } catch (e) {}
-          // 2) scan localStorage keys for any quizzes maps
-          try {
-            for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              let parsed = null;
-              try { parsed = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
-              if (!parsed) continue;
-              // top-level `quizzes` object
-              if (parsed.quizzes && typeof parsed.quizzes === 'object') {
-                Object.keys(parsed.quizzes).forEach(id => {
-                  const q = parsed.quizzes[id] || {};
-                  if (((q.teacherId||'') + '').toLowerCase() === admin) found[q.id || id] = q;
-                });
-              } else {
-                // map-like: id -> quiz
-                const keys = Object.keys(parsed).slice(0,50);
-                const looksLikeQuizzes = keys.length && keys.every(k => {
-                  const v = parsed[k];
-                  return v && typeof v === 'object' && ('title' in v || 'subjects' in v || 'teacherId' in v);
-                });
-                if (looksLikeQuizzes) {
-                  Object.keys(parsed).forEach(id => {
-                    const q = parsed[id] || {};
-                    if (((q.teacherId||'') + '').toLowerCase() === admin) found[q.id || id] = q;
-                  });
-                }
-              }
-            }
-          } catch (e) {}
-          const list = Object.keys(found).map(k => found[k]);
-          if (!list.length) return showNotification('No admin-owned quizzes found in this browser storage.', 'info');
-          const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), admin, quizzes: list }, null, 2)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `admin-quizzes-${(new Date()).toISOString().slice(0,19).replace(/[:T]/g,'_')}.json`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(url);
-          showNotification(`Exported ${list.length} admin quiz(es) to JSON`, 'success', 6000);
-        } catch (err) {
-          showNotification('Failed to export admin quizzes', 'error');
-        }
-      };
-    }
+    
   ];
   const selectedTopic = topics.find((topic) => topic.id === state.teacherGuideTopic) || null;
   const container = document.createElement('div');
