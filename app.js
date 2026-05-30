@@ -6677,6 +6677,10 @@ function renderSettingsView() {
           <button id="adoptUnownedQuizzesBtn" class="btn btn-ghost">Restore quizzes to my account</button>
           <div class="small" style="margin-top:8px">Assign any unowned or orphaned quizzes on this device to your teacher account so they appear in your dashboard.</div>
         </div>
+        <div style="margin-top:8px">
+          <button id="exportAdminQuizzesBtn" class="btn btn-ghost">Export Admin Quizzes</button>
+          <div class="small" style="margin-top:6px">Download any quizzes owned by the admin from this browser's storage.</div>
+        </div>
       </div>
       <div class="card">
         <div class="h3">Cloud Sync</div>
@@ -7380,6 +7384,66 @@ function renderTeacherGuideView() {
         'Choose Email or WhatsApp.',
         'Admins can open Support and update the live support email and WhatsApp number from there.'
       ]
+    }
+    const exportAdminBtn = document.getElementById('exportAdminQuizzesBtn');
+    if (exportAdminBtn) {
+      exportAdminBtn.onclick = () => {
+        try {
+          const admin = SUPER_ADMIN_EMAIL;
+          const found = {};
+          // 1) from in-memory / stored quizzes via accessor
+          try {
+            const all = getAllQuizzes({ includeDeleted: true }) || {};
+            Object.keys(all).forEach(k => {
+              const q = all[k] || {};
+              if (((q.teacherId||'') + '').toLowerCase() === admin) found[q.id || k] = q;
+            });
+          } catch (e) {}
+          // 2) scan localStorage keys for any quizzes maps
+          try {
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              let parsed = null;
+              try { parsed = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
+              if (!parsed) continue;
+              // top-level `quizzes` object
+              if (parsed.quizzes && typeof parsed.quizzes === 'object') {
+                Object.keys(parsed.quizzes).forEach(id => {
+                  const q = parsed.quizzes[id] || {};
+                  if (((q.teacherId||'') + '').toLowerCase() === admin) found[q.id || id] = q;
+                });
+              } else {
+                // map-like: id -> quiz
+                const keys = Object.keys(parsed).slice(0,50);
+                const looksLikeQuizzes = keys.length && keys.every(k => {
+                  const v = parsed[k];
+                  return v && typeof v === 'object' && ('title' in v || 'subjects' in v || 'teacherId' in v);
+                });
+                if (looksLikeQuizzes) {
+                  Object.keys(parsed).forEach(id => {
+                    const q = parsed[id] || {};
+                    if (((q.teacherId||'') + '').toLowerCase() === admin) found[q.id || id] = q;
+                  });
+                }
+              }
+            }
+          } catch (e) {}
+          const list = Object.keys(found).map(k => found[k]);
+          if (!list.length) return showNotification('No admin-owned quizzes found in this browser storage.', 'info');
+          const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), admin, quizzes: list }, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `admin-quizzes-${(new Date()).toISOString().slice(0,19).replace(/[:T]/g,'_')}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          showNotification(`Exported ${list.length} admin quiz(es) to JSON`, 'success', 6000);
+        } catch (err) {
+          showNotification('Failed to export admin quizzes', 'error');
+        }
+      };
     }
   ];
   const selectedTopic = topics.find((topic) => topic.id === state.teacherGuideTopic) || null;
