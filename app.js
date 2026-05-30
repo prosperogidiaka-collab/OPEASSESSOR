@@ -1547,6 +1547,30 @@ function getQuestionSubjectLabel(question = {}) {
 
 function buildCorrectionShareLinksText(quiz, submission) {
   const resultUrl = buildCertificateVerificationUrl(quiz, submission);
+  // If the submission spans multiple subjects, provide one correction link per subject.
+  try {
+    const breakdown = (typeof computeSubmissionSubjectBreakdown === 'function')
+      ? computeSubmissionSubjectBreakdown(quiz, submission || {})
+      : [];
+    if (Array.isArray(breakdown) && breakdown.length > 1) {
+      const parts = ['Result Summary', resultUrl, '', 'Correction PDF'];
+      breakdown.forEach((subject) => {
+        const name = (subject && subject.name) ? subject.name.toString().trim() : '';
+        if (!name) return;
+        const normalized = normalizeSubjectName(name) || name.toLowerCase();
+        const link = buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true, correctionSubject: normalized });
+        parts.push(name);
+        parts.push(link);
+        parts.push('');
+      });
+      // remove trailing blank line
+      if (parts[parts.length - 1] === '') parts.pop();
+      return parts.join('\n');
+    }
+  } catch (e) {
+    // fall back to single-link behavior on error
+    console.warn('Could not build per-subject correction links', e);
+  }
   const correctionUrl = buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true });
   return [
     'Result Summary',
@@ -1561,6 +1585,27 @@ function buildCorrectionShareMessage(submission, quiz) {
   const requestLine = submission.correctionRequested
     ? `Requested at: ${submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'N/A'}`
     : '';
+  // If multiple subjects exist, use pluralized message and include per-subject links.
+  try {
+    const breakdown = (typeof computeSubmissionSubjectBreakdown === 'function')
+      ? computeSubmissionSubjectBreakdown(quiz, submission || {})
+      : [];
+    if (Array.isArray(breakdown) && breakdown.length > 1) {
+      return [
+        `Hi ${submission.name || 'Student'},`,
+        '',
+        'Your corrections are ready.',
+        requestLine,
+        '',
+        buildCorrectionShareLinksText(quiz, submission),
+        '',
+        'Regards,',
+        getTeacherSignatureLabel(quiz?.teacherId || state.teacherId)
+      ].filter(Boolean).join('\n');
+    }
+  } catch (e) {
+    console.warn('Could not determine subject breakdown for correction message', e);
+  }
   return [
     `Hi ${submission.name || 'Student'},`,
     '',
