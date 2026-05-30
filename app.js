@@ -1,4 +1,4 @@
-Ôªø// OPE ASSESSOR - Complete Application Logic
+// OPE ASSESSOR - Complete Application Logic
 // Blue Pastel Theme   Centered Layout   Protected Results Access
 
 // ============================================================================
@@ -13,12 +13,12 @@ const SUPER_ADMIN_EMAIL = 'prosperogidiaka@gmail.com';
 const SUPER_ADMIN_PASSWORD = '';
 const ADMIN_CONTACT_EMAIL = SUPER_ADMIN_EMAIL;
 const STORAGE_KEYS = {
-  quizzes: 'ope_quizzes_v2',
+  quizzes: 'ope_quizzes',
   submissions: 'ope_submissions_v2',
   // Small, append-only queue of student submissions that haven't been confirmed
   // saved to the cloud yet (POST /api/submissions). Drained on submit, on app
   // load, and whenever the browser comes back online. NOT part of NETWORK_SYNC_KEYS
-  // ‚Äî it's a local retry buffer, never itself synced.
+  // ó it's a local retry buffer, never itself synced.
   submissionOutbox: 'ope_submission_outbox_v1',
   teacherId: 'ope_teacher_id',
   teachers: 'ope_teachers_v1',
@@ -53,12 +53,12 @@ const NETWORK_STATE_KEY_MAP = {
 // Sync is manual-only: it runs when the teacher clicks a Sync button, never on
 // a timer, focus, visibilitychange, online, or from the service worker. There
 // is still a single best-effort pull on first load so a teacher signing in on a
-// new browser sees their cloud data ‚Äî that's a one-shot read, not a retry loop.
+// new browser sees their cloud data ó that's a one-shot read, not a retry loop.
 const DEFAULT_NETWORK_SYNC_POLL_MS = 15000;
 const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
 // Cap how long the very first paint waits on the cloud pull. Keep this short
 // so a slow/cold serverless backend doesn't leave the user staring at a blank
-// screen ‚Äî the app falls back to local data and a background sync still runs.
+// screen ó the app falls back to local data and a background sync still runs.
 const DEFAULT_STARTUP_SYNC_TIMEOUT_MS = 2000;
 // Teacher/admin workspaces need a longer read window than the public/student
 // routes because /api/state can legitimately include many quizzes, teachers,
@@ -79,10 +79,10 @@ const TOKEN_PRICE_PER_QUIZ = 1000;
 const TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS = 30;
 const TOKEN_PACKAGE_DEFINITIONS = {
   single: { key: 'single', label: 'Single', tokens: 1, price: 1000, useCase: 'One-off' },
-  starter: { key: 'starter', label: 'Starter', tokens: 3, price: 2700, useCase: 'Save ‚Ç¶300' },
-  standard: { key: 'standard', label: 'Standard', tokens: 7, price: 6000, useCase: 'Save ‚Ç¶1,000' },
-  pro: { key: 'pro', label: 'Pro', tokens: 15, price: 12000, useCase: 'Save ‚Ç¶3,000' },
-  school: { key: 'school', label: 'School', tokens: 50, price: 35000, useCase: 'Save ‚Ç¶15,000' },
+  starter: { key: 'starter', label: 'Starter', tokens: 3, price: 2700, useCase: 'Save ?300' },
+  standard: { key: 'standard', label: 'Standard', tokens: 7, price: 6000, useCase: 'Save ?1,000' },
+  pro: { key: 'pro', label: 'Pro', tokens: 15, price: 12000, useCase: 'Save ?3,000' },
+  school: { key: 'school', label: 'School', tokens: 50, price: 35000, useCase: 'Save ?15,000' },
   'unlimited-3mo': { key: 'unlimited-3mo', label: '3-Month Unlimited', tokens: 0, price: 50000, unlimitedDays: 90, useCase: 'Unlimited quiz saving for 3 months on one registered device' }
 };
 
@@ -408,7 +408,7 @@ let lastNetworkPullAt = 0;
 // duration of a click on a Sync button, so error toasts/banners surface ONLY
 // when the user actually asked for a sync. `lastSyncFailedForUser` persists
 // between renders so the "shared sync is not active" card appears only after a
-// user-initiated sync exhausted its retries ‚Äî never because of a background read.
+// user-initiated sync exhausted its retries ó never because of a background read.
 let userInitiatedSync = false;
 let lastSyncFailedForUser = false;
 let serverPdfExportUnavailable = false;
@@ -418,8 +418,8 @@ let _historyApplying = false;
 let _lastHistoryView = '';
 let _lastRenderedView = '';
 // Throttle for the pull that runs when the teacher navigates into a dashboard
-// page (so new student attempts show up). Not a timer ‚Äî fires on navigation
-// only ‚Äî and at most once a minute so it never becomes the old polling loop.
+// page (so new student attempts show up). Not a timer ó fires on navigation
+// only ó and at most once a minute so it never becomes the old polling loop.
 let _lastTeacherNavPullAt = 0;
 // Which quiz the results view has already pulled submissions for this session.
 // Stops the per-quiz pull from re-firing on every re-render of the results page.
@@ -457,7 +457,7 @@ let _calculatorExpression = '';
 
 function canUseNetworkSync() {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return false;
-  // Honour the 503/quota cooldown set by fetchWithRetry ‚Äî while the backend
+  // Honour the 503/quota cooldown set by fetchWithRetry ó while the backend
   // is paused, nothing should attempt sync (polling, save() auto-push, the
   // explicit Sync button all check this gate).
   if (typeof isNetworkSyncPaused === 'function' && isNetworkSyncPaused()) return false;
@@ -503,7 +503,7 @@ function notifyStorageQuotaExceeded() {
   const now = Date.now();
   if ((now - lastStorageQuotaNoticeAt) < STORAGE_QUOTA_NOTICE_COOLDOWN_MS) return;
   lastStorageQuotaNoticeAt = now;
-  showNotification('This device is low on storage ‚Äî some data could not be saved. Clear old browsing data or use a different browser.', 'error', 9000);
+  showNotification('This device is low on storage ó some data could not be saved. Clear old browsing data or use a different browser.', 'error', 9000);
 }
 
 async function flushPendingNetworkWrites(keys = [], options = {}) {
@@ -961,7 +961,7 @@ async function checkNetworkSyncHealth(options = {}) {
     if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Shared sync server is unavailable'));
     const payload = await response.json();
     if (!payload || payload.ok !== true) throw new Error('Shared sync server returned an invalid health response');
-    // On serverless deployments, the file backend is impossible ‚Äî only Supabase
+    // On serverless deployments, the file backend is impossible ó only Supabase
     // (or another shared backend) can persist data across invocations. When the
     // health endpoint reports the backend isn't configured, fail loudly with
     // exactly what's missing so the user can fix their env vars.
@@ -974,7 +974,7 @@ async function checkNetworkSyncHealth(options = {}) {
     if (options.captureFailure !== false) {
       networkSyncFailed = false;
       networkSyncFailureMessage = '';
-      // Health-check success is enough to consider sync live ‚Äî otherwise the UI
+      // Health-check success is enough to consider sync live ó otherwise the UI
       // sits on "not active yet" until the first state PUT/GET, which can
       // confuse the user when no state op has been triggered yet.
       networkSyncReady = true;
@@ -1059,7 +1059,7 @@ async function openTeacherWorkspace(targetView = 'teacher', options = {}) {
 function bindNetworkSyncWindowEvents() {
   if (networkSyncEventsBound || typeof window === 'undefined') return;
   networkSyncEventsBound = true;
-  // No focus / online / visibilitychange auto-sync ‚Äî sync is manual-only.
+  // No focus / online / visibilitychange auto-sync ó sync is manual-only.
   // We keep only the cross-tab `storage` listener so edits made in another tab
   // of THIS browser refresh the UI; that's a local read, not a network call.
   window.addEventListener('storage', (event) => {
@@ -1136,7 +1136,7 @@ function isMeaningfulQuestion(question) {
     return accepted.some((a) => (a || '').toString().trim());
   }
   if (type === 'essay') {
-    // Essay needs only the question text ‚Äî no answer required at authoring time.
+    // Essay needs only the question text ó no answer required at authoring time.
     return true;
   }
   return false;
@@ -1305,7 +1305,7 @@ function getSupportSettings() {
 
 function formatNaira(value = 0) {
   const amount = Math.max(0, Number(value) || 0);
-  return `‚Ç¶${amount.toLocaleString('en-NG')}`;
+  return `?${amount.toLocaleString('en-NG')}`;
 }
 
 function getTokenPackageCatalog() {
@@ -1329,7 +1329,7 @@ function buildLicensePricingListMarkup() {
     if (tokenPackage.unlimitedDays) {
       return `<li><strong>${escapeHtml(tokenPackage.label)}</strong>: ${formatNaira(tokenPackage.price)} for ${tokenPackage.unlimitedDays} days on one registered device</li>`;
     }
-    return `<li><strong>${escapeHtml(tokenPackage.label)}</strong>: ${tokenPackage.tokens} Token${tokenPackage.tokens === 1 ? '' : 's'} ‚Ä¢ ${formatNaira(tokenPackage.price)} ‚Ä¢ ${formatNaira(tokenPackage.effectivePrice)} per quiz</li>`;
+    return `<li><strong>${escapeHtml(tokenPackage.label)}</strong>: ${tokenPackage.tokens} Token${tokenPackage.tokens === 1 ? '' : 's'} ï ${formatNaira(tokenPackage.price)} ï ${formatNaira(tokenPackage.effectivePrice)} per quiz</li>`;
   }).join('');
 }
 
@@ -1880,7 +1880,7 @@ function applyNetworkSnapshot(snapshot) {
       pushNetworkValue(storageKey, mergedValue);
     }
     // Per-quiz "Cloud synced" marker. Any quiz the cloud already has, and whose
-    // local copy isn't newer than the cloud's, is by definition up to date ‚Äî so
+    // local copy isn't newer than the cloud's, is by definition up to date ó so
     // it should read "Cloud synced", not "Sync to Cloud". Only quizzes the
     // teacher actually edited locally (local copy newer than the cloud's) stay
     // "Pending cloud sync". Without this, a quiz pulled fresh from the cloud has
@@ -1901,7 +1901,7 @@ function applyNetworkSnapshot(snapshot) {
 // Hard cap on a single sync HTTP call so a stuck serverless cold-start or a
 // silently-dropped TLS connection can't hang forever. Generous enough for a
 // fat quiz upload (embedded images, gzipped) or a full /api/state pull over a
-// slow mobile connection ‚Äî 12s was tripping the abort mid-upload.
+// slow mobile connection ó 12s was tripping the abort mid-upload.
 const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 30000;
 // Upper bound for a single PUT body. Cloudflare Pages Functions accept much
 // larger bodies than Vercel's old ~4.5 MB cap, and Supabase's jsonb columns can
@@ -1911,8 +1911,8 @@ const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 30000;
 const NETWORK_SYNC_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 // Gzip a JSON string with the browser's native CompressionStream so the
-// per-quiz PUT bodies (often 1‚Äì2 MB of JSON with embedded base64 images)
-// upload at ~30‚Äì60% of their wire size. Returns the original string on
+// per-quiz PUT bodies (often 1ñ2 MB of JSON with embedded base64 images)
+// upload at ~30ñ60% of their wire size. Returns the original string on
 // browsers without CompressionStream (Safari < 16.4) so the call site can
 // always fall through to an uncompressed PUT.
 async function gzipBodyIfPossible(jsonText) {
@@ -1925,7 +1925,7 @@ async function gzipBodyIfPossible(jsonText) {
   try {
     const stream = new Blob([jsonText]).stream().pipeThrough(new window.CompressionStream('gzip'));
     const compressed = await new Response(stream).arrayBuffer();
-    // Skip the encoded body if it's somehow larger than the source ‚Äî only
+    // Skip the encoded body if it's somehow larger than the source ó only
     // happens on tiny payloads where the gzip header dominates.
     if (compressed.byteLength >= jsonText.length) {
       return { body: jsonText, encoding: '' };
@@ -1943,7 +1943,7 @@ function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQU
   const fetchPromise = fetch(url, finalOptions);
   if (timer) {
     // Clear the timeout when the fetch settles. Use a then() with BOTH handlers
-    // (success + failure) so this cleanup branch handles its own rejection ‚Äî a
+    // (success + failure) so this cleanup branch handles its own rejection ó a
     // bare .finally() here left a dangling rejected promise on abort, which
     // surfaced as "Uncaught (in promise) AbortError". The real rejection is
     // still delivered to the caller through the returned `fetchPromise`.
@@ -1952,7 +1952,7 @@ function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQU
   return fetchPromise;
 }
 
-// Sync is manual-only now, so there is no automatic "cooldown" ‚Äî after a sync
+// Sync is manual-only now, so there is no automatic "cooldown" ó after a sync
 // fails its bounded retries we simply wait for the next "Sync Now" click. These
 // constants are kept (NETWORK_SYNC_MAX_RETRIES drives fetchWithRetry's cap) and
 // networkSyncPausedUntil stays 0 so the remaining isNetworkSyncPaused() call
@@ -1967,7 +1967,7 @@ function isNetworkSyncPaused() {
 }
 
 function setNetworkSyncPaused(reason) {
-  // No automatic cooldown anymore ‚Äî sync is manual, so after a failure we just
+  // No automatic cooldown anymore ó sync is manual, so after a failure we just
   // record it and wait for the next "Sync Now" click. (networkSyncPausedUntil
   // is left at 0 so the remaining isNetworkSyncPaused() call sites are inert.)
   networkSyncFailed = true;
@@ -1981,10 +1981,10 @@ function setNetworkSyncPaused(reason) {
 
 // Retry wrapper for a single sync request. One immediate try, then up to
 // NETWORK_SYNC_MAX_RETRIES (4) retries with exponential backoff: 2s, 4s, 8s,
-// 16s. After the cap we STOP ‚Äî no cooldown, no background retry ‚Äî and throw so
+// 16s. After the cap we STOP ó no cooldown, no background retry ó and throw so
 // the caller can surface the error once and wait for the next "Sync Now" click.
 //   - AbortError (timeout): don't retry (caller moved on / request truly hung).
-//   - 402 / 429 / 5xx: transient backend ‚Äî retry with backoff, then give up.
+//   - 402 / 429 / 5xx: transient backend ó retry with backoff, then give up.
 //   - Other non-OK: retry with backoff, then return the response to the caller.
 function syncRetryDelayMs(attempt) {
   return Math.pow(2, attempt) * 1000; // attempt 0 -> 2s, 1 -> 4s, 2 -> 8s, 3 -> 16s
@@ -2027,7 +2027,7 @@ async function fetchWithRetry(url, options = {}, attempt = 0) {
   return res;
 }
 
-// Used by the automatic (non-button) sync paths ‚Äî a student finishing a quiz,
+// Used by the automatic (non-button) sync paths ó a student finishing a quiz,
 // the per-quiz push after an edit. One immediate attempt, then ONE retry after
 // 2s if the first fails (network error / timeout / 402 / 429 / 5xx). After that
 // it gives up: the data stays local and the teacher's manual "Sync To Cloud" /
@@ -2067,7 +2067,7 @@ async function pullNetworkState(force = false) {
   })
     .then(async (res) => {
       if (res.status === 402 || res.status === 429 || res.status === 503) {
-        // Backend paused ‚Äî arm the cooldown so the 15s polling loop and any
+        // Backend paused ó arm the cooldown so the 15s polling loop and any
         // pending writes stop hammering. The next teacher action will surface
         // the "paused" notification through fetchWithRetry.
         setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
@@ -2096,7 +2096,7 @@ async function pullNetworkState(force = false) {
 
 // Bulk per-key state push (teachers / students / tokenTransactions, plus the
 // anonymous-student `submissions` path). This is an automatic write driven by
-// save() ‚Äî so it makes exactly ONE attempt, no retry loop, no cooldown. If it
+// save() ó so it makes exactly ONE attempt, no retry loop, no cooldown. If it
 // fails the key stays in dirtyNetworkKeys and uploads on the next manual
 // "Force Sync Now" click. Skips entirely when the browser reports it's offline.
 async function pushNetworkValue(key, value, options = {}) {
@@ -2123,9 +2123,9 @@ async function pushNetworkValue(key, value, options = {}) {
   }
   // Quizzes are exclusively per-quiz synced through /api/quizzes/<id> now.
   // Bulk PUT /api/state/quizzes was uploading the entire quizzes map
-  // (1.5‚Äì2 MB with embedded images) on every save() auto-push, every poll
+  // (1.5ñ2 MB with embedded images) on every save() auto-push, every poll
   // cycle catch-up, every applyNetworkSnapshot drift push, and every Force
-  // Sync Now click ‚Äî that was the 15GB-egress culprit. Treat the bulk PUT
+  // Sync Now click ó that was the 15GB-egress culprit. Treat the bulk PUT
   // as a no-op so legacy callers don't fire it; clear the dirty flag so the
   // polling loop doesn't keep re-scheduling. Anything that genuinely needs
   // the cloud updated calls pushSingleQuizToCloud(quiz) explicitly.
@@ -2163,7 +2163,7 @@ async function pushNetworkValue(key, value, options = {}) {
     networkSyncFailed = true;
     networkSyncFailureMessage = `Cannot upload ${key}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit. Remove embedded images or split the data, then try again.`;
     markNetworkKeyDirty(key);
-    console.error('Network sync skipped ‚Äî payload too large for', key, body.length);
+    console.error('Network sync skipped ó payload too large for', key, body.length);
     return false;
   }
   pendingNetworkWrites.add(key);
@@ -2185,7 +2185,7 @@ async function pushNetworkValue(key, value, options = {}) {
         return false;
       }
       if (res.status === 402 || res.status === 429 || res.status >= 500) {
-        // Backend paused / throttled ‚Äî leave it dirty, no toast (this is an
+        // Backend paused / throttled ó leave it dirty, no toast (this is an
         // automatic write; setNetworkSyncPaused only toasts on a user click).
         setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
         markNetworkKeyDirty(key);
@@ -2208,7 +2208,7 @@ async function pushNetworkValue(key, value, options = {}) {
     } catch (err) {
       networkSyncFailed = true;
       const reason = err && err.name === 'AbortError'
-        ? `Upload of ${key} timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s. The cloud server is slow or unreachable ‚Äî try Force Sync Now in Settings.`
+        ? `Upload of ${key} timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s. The cloud server is slow or unreachable ó try Force Sync Now in Settings.`
         : (err && err.message ? err.message : 'Failed to save shared state');
       networkSyncFailureMessage = explainNetworkSyncFailureMessage(reason);
       markNetworkKeyDirty(key);
@@ -2236,11 +2236,11 @@ function getSharedSyncWarningMessage() {
     return networkSyncFailureMessage;
   }
   if (!getAuthSessionToken()) {
-    return 'Log in as a teacher first ‚Äî cloud upload requires an active session.';
+    return 'Log in as a teacher first ó cloud upload requires an active session.';
   }
   // Sync hasn't completed yet but no error was captured. Tell the user it's in
   // progress instead of leaving them with a vague "not active" message.
-  return `Syncing with ${getCurrentSyncServerLabel()}‚Ä¶ your changes are saved locally and will upload momentarily.`;
+  return `Syncing with ${getCurrentSyncServerLabel()}Ö your changes are saved locally and will upload momentarily.`;
 }
 
 async function syncSharedKeys(keys = []) {
@@ -2257,7 +2257,7 @@ async function syncSharedKeys(keys = []) {
 // still the reconciler-of-last-resort and continues to run on the polling loop.
 // options.auto: this is an automatic per-quiz push fired right after an edit /
 // submit (not a user clicking a Sync button). In that mode we make exactly ONE
-// attempt ‚Äî no fetchWithRetry backoff loop ‚Äî and we skip entirely when the
+// attempt ó no fetchWithRetry backoff loop ó and we skip entirely when the
 // browser reports it's offline. On failure the quiz simply stays "Pending cloud
 // sync" so the per-quiz "Sync To Cloud" button is the recovery path; no banner.
 async function pushSingleQuizToCloud(quiz, options = {}) {
@@ -2273,7 +2273,7 @@ async function pushSingleQuizToCloud(quiz, options = {}) {
   }
   // Stamp the current teacher as the owner if the quiz doesn't already carry
   // one. Without this, an imported quiz (or one created under an older flow)
-  // lands in Supabase with an empty teacher_id column ‚Äî and the bulk
+  // lands in Supabase with an empty teacher_id column ó and the bulk
   // /api/state read filters submissions by the teacher's owned quiz_ids, so the
   // teacher would never see that quiz's results. Persist the owner locally too
   // so subsequent reads / pushes keep it.
@@ -2291,7 +2291,7 @@ async function pushSingleQuizToCloud(quiz, options = {}) {
   }
   // Shrink any oversized embedded images first so an image-heavy quiz uploads
   // fast and stays under the body limit. If anything actually shrank, persist
-  // the slimmer copy locally too (no updatedAt bump ‚Äî same content, smaller
+  // the slimmer copy locally too (no updatedAt bump ó same content, smaller
   // pixels) so we don't re-do this work on every sync and localStorage stays
   // lean. Best-effort: on any failure we just push what we have.
   try {
@@ -2483,7 +2483,7 @@ async function syncSingleQuizWithCloud(quiz) {
       return { ok: false, message: 'Your teacher session expired. Log out and log back in, then retry.' };
     }
     if (res.status === 404) {
-      // Push succeeded but cloud GET 404'd ‚Äî most likely a transient race or a
+      // Push succeeded but cloud GET 404'd ó most likely a transient race or a
       // backend that doesn't yet expose the per-quiz GET. Treat the upload as the
       // success and skip the merge.
       return { ok: true, pulled: false, message: `Quiz ${quiz.id} uploaded.` };
@@ -2599,7 +2599,7 @@ function buildPortableQuizAccessTransport(quiz) {
 
 async function prepareQuizAccessTransport(quiz) {
   if (!quiz || !quiz.id) return null;
-  // Push only this one quiz to the cloud through the per-quiz endpoint ‚Äî
+  // Push only this one quiz to the cloud through the per-quiz endpoint ó
   // bulk syncSharedKeys here was the source of the long links: when the
   // bulk PUT to /api/state/quizzes timed out (15GB-egress era), this fell
   // back to encoding the entire quiz as base64 in the URL. Per-quiz push is
@@ -2745,7 +2745,7 @@ async function deleteQuizById(quizId, options = {}) {
   if (changedSubmissions) save(STORAGE_KEYS.submissions, submissions);
 
   if (state.currentQuiz && state.currentQuiz.id === quizId) state.currentQuiz = null;
-  // Per-quiz push for both the quiz tombstone AND its submission tombstones ‚Äî
+  // Per-quiz push for both the quiz tombstone AND its submission tombstones ó
   // bulk PUTs to /api/state/quizzes and /api/state/submissions are both
   // blocked for teacher sessions, so propagation rides /api/quizzes/<id>.
   const quizPushed = await pushSingleQuizToCloud(tombstone);
@@ -2767,7 +2767,7 @@ async function deleteQuizById(quizId, options = {}) {
 
 function startNetworkSyncLoop() {
   if (!canUseNetworkSync()) return;
-  // Manual-only sync ‚Äî no polling interval. We still bind the cross-tab
+  // Manual-only sync ó no polling interval. We still bind the cross-tab
   // `storage` listener so multi-tab edits in this browser refresh the UI.
   bindNetworkSyncWindowEvents();
 }
@@ -2818,7 +2818,7 @@ async function initializeApp() {
     hydratePrefilledQuizFromAccess();
     // Warm the quiz from the public per-quiz endpoint in the background so it's
     // already in localStorage by the time the student taps Start Exam. Fire and
-    // forget ‚Äî no re-render (it would clobber whatever the student is typing);
+    // forget ó no re-render (it would clobber whatever the student is typing);
     // resolveQuizFromAccessWithSync re-fetches anyway if this hasn't landed yet.
     if (!state.currentQuiz && canUseNetworkSync()) {
       fetchQuizFromCloudByAccess({ code: (id || '').toString().trim() }).catch(() => {});
@@ -2863,7 +2863,7 @@ function save(key, value, options = {}) {
   if (options.skipNetworkSync) return;
   if (NETWORK_SYNC_KEYS.includes(key)) {
     markNetworkKeyDirty(key);
-    // Single best-effort PUT ‚Äî no retry timer (schedulePendingNetworkFlush is a
+    // Single best-effort PUT ó no retry timer (schedulePendingNetworkFlush is a
     // no-op now). This is also the path a student's submission takes to the
     // cloud when they tap Submit, so it must stay; on failure the key just
     // remains dirty and uploads on the next "Sync Now" click.
@@ -2918,12 +2918,12 @@ function saveAllQuizzes(q, options = {}) {
   save(STORAGE_KEYS.quizzes, { ...deletedRecords, ...nextVisible }, saveOptions);
 }
 // A submission's allQuestions/snapshots carry the FULL question objects the
-// student saw ‚Äî including each question's embedded image (mediaAssets[].src,
+// student saw ó including each question's embedded image (mediaAssets[].src,
 // base64). For an image-heavy quiz that bloats a single submission to several
 // MB, which (a) can blow the localStorage quota so the result never even saves
 // and (b) is far too big to upload, so the teacher never sees it. The images
-// belong to the quiz, not the submission ‚Äî the correction view already re-merges
-// live question content (incl. mediaAssets) from the quiz by _sourceId ‚Äî so we
+// belong to the quiz, not the submission ó the correction view already re-merges
+// live question content (incl. mediaAssets) from the quiz by _sourceId ó so we
 // strip them here. We also drop the base64 webcam proctoring frame
 // (snapshots[].data): nothing in the app ever renders it, yet dozens of them
 // (a JPEG every ~30s, several per submission) are by far the heaviest thing in
@@ -2968,7 +2968,7 @@ function slimSubmissionListForStorage(list) {
 }
 
 // Defence in depth against legacy data: webcam proctoring frames
-// (snapshots[].data ‚Äî a base64 JPEG) are no longer captured or persisted
+// (snapshots[].data ó a base64 JPEG) are no longer captured or persisted
 // (slimSubmissionForStorage strips them, startWebcam stores timestamps only),
 // but a device may still hold old submissions that carry them, and they're by
 // far the heaviest thing in a submission. This drops them as a quota fallback.
@@ -2995,8 +2995,8 @@ function writeSubmissionsToStorage(list, keepFramesFor = null) {
   for (let i = 0; i < attempts.length; i += 1) {
     try {
       localStorage[STORAGE_KEYS.submissions] = JSON.stringify(attempts[i]());
-      if (i === 1) console.warn('Submissions storage was full ‚Äî dropped webcam proctoring frames for other quizzes locally (still on the cloud).');
-      if (i === 2) console.warn('Submissions storage was very full ‚Äî dropped ALL webcam proctoring frames locally (still on the cloud).');
+      if (i === 1) console.warn('Submissions storage was full ó dropped webcam proctoring frames for other quizzes locally (still on the cloud).');
+      if (i === 2) console.warn('Submissions storage was very full ó dropped ALL webcam proctoring frames locally (still on the cloud).');
       return true;
     } catch (e) { /* try the next, lighter attempt */ }
   }
@@ -3013,7 +3013,7 @@ function saveAllSubmissions(submissions, options = {}) {
     : mergeSubmissionRecordsForSync(nextVisible, []);
   const wrote = writeSubmissionsToStorage(nextValue, options.keepFramesFor);
   // Push the FULL value (with frames) to the cloud even if the local copy had
-  // to be trimmed ‚Äî the cloud keeps the canonical, complete record. (For a
+  // to be trimmed ó the cloud keeps the canonical, complete record. (For a
   // logged-in teacher the bulk submissions push is a no-op anyway; this matters
   // for the anonymous student-submit path.)
   if (wrote && !options.skipNetworkSync && NETWORK_SYNC_KEYS.includes(STORAGE_KEYS.submissions)) {
@@ -3027,10 +3027,10 @@ function saveAllTeacherStudents(s) { save(STORAGE_KEYS.students, s); }
 
 // ---- Per-submission cloud upload + offline outbox -------------------------
 // A finished submission lives in three places until it's safely on the cloud:
-//   1. localStorage[submissions] ‚Äî so this device's hasSubmittedBefore() / the
+//   1. localStorage[submissions] ó so this device's hasSubmittedBefore() / the
 //      instant-result modal / offline use still work.
-//   2. localStorage[submissionOutbox] ‚Äî the retry buffer below.
-//   3. POST /api/submissions ‚Äî the canonical write. On 200 we drop it from (2).
+//   2. localStorage[submissionOutbox] ó the retry buffer below.
+//   3. POST /api/submissions ó the canonical write. On 200 we drop it from (2).
 // The outbox is what makes a submit survive a network blip without the student
 // having to do anything: it's drained again on the next app load / `online`.
 function getSubmissionOutbox() {
@@ -3051,7 +3051,7 @@ function enqueueSubmissionToOutbox(sub) {
   const key = submissionOutboxKey(slim);
   const next = getSubmissionOutbox().filter((item) => submissionOutboxKey(item) !== key);
   next.push(slim);
-  // Bound it ‚Äî the outbox should normally be empty/near-empty; if uploads keep
+  // Bound it ó the outbox should normally be empty/near-empty; if uploads keep
   // failing, cap to the most recent so a kiosk device can't accumulate forever.
   setSubmissionOutbox(next.slice(-50));
 }
@@ -3063,7 +3063,7 @@ function dequeueSubmissionFromOutbox(sub) {
 
 // POST one submission to the cloud. Resolves true on a confirmed save, false on
 // any failure (the caller leaves it in the outbox to retry later). One attempt
-// plus one short retry ‚Äî same philosophy as the other automatic student paths.
+// plus one short retry ó same philosophy as the other automatic student paths.
 async function submitOneSubmissionToCloud(sub) {
   if (!sub || typeof sub !== 'object' || !sub.quizId) return false;
   if (!canUseNetworkSync()) return false;
@@ -3074,7 +3074,7 @@ async function submitOneSubmissionToCloud(sub) {
       body: JSON.stringify({ submission: slimSubmissionForStorage(sub) })
     });
     if (res && res.ok) return true;
-    console.warn('POST /api/submissions failed ‚Äî', res ? `HTTP ${res.status}` : 'no response');
+    console.warn('POST /api/submissions failed ó', res ? `HTTP ${res.status}` : 'no response');
     return false;
   } catch (e) {
     console.warn('POST /api/submissions errored:', e && e.message ? e.message : e);
@@ -3084,7 +3084,7 @@ async function submitOneSubmissionToCloud(sub) {
 
 let _flushingSubmissionOutbox = false;
 // Drain the outbox: try each queued submission, drop the ones that land. Safe to
-// call often ‚Äî it no-ops if already running, if offline, or if the queue is empty.
+// call often ó it no-ops if already running, if offline, or if the queue is empty.
 async function flushSubmissionOutbox() {
   if (_flushingSubmissionOutbox) return;
   const queue = getSubmissionOutbox();
@@ -3101,7 +3101,7 @@ async function flushSubmissionOutbox() {
 }
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   // The one place we DO listen for `online`: a retry buffer is exactly what that
-  // event is for, and it never triggers a heavy pull ‚Äî just re-POSTs tiny rows.
+  // event is for, and it never triggers a heavy pull ó just re-POSTs tiny rows.
   window.addEventListener('online', () => { flushSubmissionOutbox().catch(() => {}); });
 }
 
@@ -3156,11 +3156,11 @@ function getCurrentTeacher() {
   const id = normalizeEmail(state.teacherId);
   const local = getAllTeachers()[id];
   if (local) return local;
-  // No local teacher record yet ‚Äî e.g. a freshly-wiped device (or one that just
+  // No local teacher record yet ó e.g. a freshly-wiped device (or one that just
   // cleared site data) that authenticated against the cloud before the teachers
   // table has been pulled. Synthesize a minimal record from the active auth
   // session so the teacher isn't bounced straight back to the login screen;
-  // the full record (tokens, license, name‚Ä¶) replaces this once it's pulled.
+  // the full record (tokens, license, nameÖ) replaces this once it's pulled.
   const session = getStoredAuthSession();
   if (session && session.token && normalizeEmail(session.email) === id) {
     return { teacherId: id, email: id, role: session.role || 'teacher', _synthesized: true };
@@ -3249,7 +3249,7 @@ function updateTeacherProfileRecord(existingTeacherId, nextProfile = {}, options
     saveAllQuizzes(quizzes, { skipNetworkSync: true });
     // Bulk PUT /api/state/quizzes is now a no-op; fan out per-quiz pushes for
     // each reassigned quiz so the cloud's teacher_id catches up. Fire and
-    // forget ‚Äî this admin flow is rare and a per-quiz Sync from the dashboard
+    // forget ó this admin flow is rare and a per-quiz Sync from the dashboard
     // can repair anything that fails.
     if (reassigned.length && typeof pushSingleQuizToCloud === 'function') {
       Promise.all(reassigned.map((quiz) => pushSingleQuizToCloud(quiz, { auto: true }).catch(() => false))).catch(() => {});
@@ -3331,7 +3331,7 @@ function getTeacherLicenseStatus(teacher = getCurrentTeacher()) {
       label: `${packageLabel} request pending`,
       detail: requestedPackage?.unlimitedDays
         ? `Awaiting admin approval for ${packageLabel} (${formatNaira(requestedAmount)}).`
-        : `Awaiting admin approval for ${packageLabel}${requestedTokens ? ` ‚Ä¢ ${requestedTokens} Token${requestedTokens === 1 ? '' : 's'}` : ''} (${formatNaira(requestedAmount)}).`,
+        : `Awaiting admin approval for ${packageLabel}${requestedTokens ? ` ï ${requestedTokens} Token${requestedTokens === 1 ? '' : 's'}` : ''} (${formatNaira(requestedAmount)}).`,
       summary: baseSummary,
       tokenBalance,
       endsAt
@@ -3346,7 +3346,7 @@ function getTeacherLicenseStatus(teacher = getCurrentTeacher()) {
       tokenBalance,
       daysLeft: unlimitedDays,
       label: 'Unlimited active',
-      detail: `Tokens: ${tokenBalance} ‚Ä¢ Unlimited: ${unlimitedDays} day${unlimitedDays === 1 ? '' : 's'} left on this device. Saving a new quiz will not deduct any token until ${new Date(teacher.unlimitedExpiresAt).toLocaleString()}.`,
+      detail: `Tokens: ${tokenBalance} ï Unlimited: ${unlimitedDays} day${unlimitedDays === 1 ? '' : 's'} left on this device. Saving a new quiz will not deduct any token until ${new Date(teacher.unlimitedExpiresAt).toLocaleString()}.`,
       summary: baseSummary,
       endsAt
     };
@@ -3572,7 +3572,7 @@ function requireTeacher() {
 
 function logoutTeacher() {
   localStorage.removeItem(STORAGE_KEYS.teacherSession);
-  // Best-effort server logout ‚Äî fire and forget so the UI never blocks on it.
+  // Best-effort server logout ó fire and forget so the UI never blocks on it.
   if (canUseNetworkSync() && getAuthSessionToken()) {
     fetch(buildApiUrl('/api/auth/logout'), {
       method: 'POST',
@@ -3710,7 +3710,7 @@ function ensureSuperAdminAccount() {
   const teachers = getAllTeachers();
   const id = normalizeEmail(SUPER_ADMIN_EMAIL);
   const existing = teachers[id] || {};
-  // The super-admin record never carries password material ‚Äî auth happens via
+  // The super-admin record never carries password material ó auth happens via
   // server env vars (POST /api/auth/super-admin/login). Strip any legacy field
   // that may have been written by older client builds.
   const sanitized = { ...existing };
@@ -3914,7 +3914,7 @@ function buildRichEditorToolbarMarkup() {
     { label: 'U', command: 'underline', title: 'Underline' },
     { label: 'Sup', command: 'superscript', title: 'Superscript' },
     { label: 'Sub', command: 'subscript', title: 'Subscript' },
-    { label: '‚Ä¢ List', command: 'insertUnorderedList', title: 'Bullet List' },
+    { label: 'ï List', command: 'insertUnorderedList', title: 'Bullet List' },
     { label: '1. List', command: 'insertOrderedList', title: 'Numbered List' },
     { label: 'Clear', command: 'removeFormat', title: 'Clear Formatting' }
   ];
@@ -4137,7 +4137,7 @@ function renderQuestionMediaAssets(question = {}, placement = 'before') {
 }
 
 // Downscale + re-encode a base64 image data-URL to keep quiz payloads small
-// enough to sync quickly (a 1600px PNG screenshot can be 1‚Äì3 MB; the same image
+// enough to sync quickly (a 1600px PNG screenshot can be 1ñ3 MB; the same image
 // at 1200px JPEG ~0.8 is usually well under 200 KB and still perfectly readable
 // for a quiz question). Flattens transparency onto white before encoding to
 // JPEG. Returns the original string unchanged if it isn't an image data-URL, if
@@ -4173,8 +4173,8 @@ async function recompressDataUrlImage(dataUrl, options = {}) {
 }
 
 // Recompress a base64 image stored in localStorage before we send it over the
-// wire. The threshold is on the data-URL string length (~1.37√ó the byte size),
-// so ~220 KB string ‚âà ~160 KB image ‚Äî anything bigger gets re-encoded, and if
+// wire. The threshold is on the data-URL string length (~1.37◊ the byte size),
+// so ~220 KB string ò ~160 KB image ó anything bigger gets re-encoded, and if
 // it's still large after that, dropped to a smaller size/quality.
 const QUIZ_MEDIA_RECOMPRESS_THRESHOLD = 220 * 1024;
 async function shrinkOversizedDataUrlImage(src) {
@@ -4191,7 +4191,7 @@ async function shrinkOversizedDataUrlImage(src) {
 // same object reference when nothing changed, or a fresh copy with slimmed
 // mediaAssets. Used right before a per-quiz cloud PUT so an image-heavy quiz
 // (e.g. a maths paper with diagram screenshots) doesn't blow past the body
-// limit or take forever to upload. Best-effort ‚Äî never throws.
+// limit or take forever to upload. Best-effort ó never throws.
 async function shrinkQuizMediaForSync(quiz) {
   if (!quiz || typeof quiz !== 'object' || !Array.isArray(quiz.subjects)) return quiz;
   let changed = false;
@@ -4235,7 +4235,7 @@ function readImageFileAsDataUrl(file, options = {}) {
       const source = reader.result;
       if (typeof source !== 'string' || !source.startsWith('data:image/')) return resolve(source);
       // Always normalise uploaded images to a sync-friendly size/quality rather
-      // than only when they're huge ‚Äî a 900px PNG screenshot is still megabytes.
+      // than only when they're huge ó a 900px PNG screenshot is still megabytes.
       try {
         const maxDim = Number(options.maxWidth) > 0 ? Number(options.maxWidth) : 1200;
         const quality = Number(options.quality) > 0 ? Number(options.quality) : 0.82;
@@ -4249,7 +4249,7 @@ function readImageFileAsDataUrl(file, options = {}) {
 }
 
 // Supported question types. Default 'mcq' preserves backward compatibility
-// for every quiz that already exists ‚Äî no migration needed.
+// for every quiz that already exists ó no migration needed.
 const QUESTION_TYPES = ['mcq', 'yesno', 'short', 'essay'];
 
 function normalizeQuestionType(value) {
@@ -4307,7 +4307,7 @@ function normalizeQuestionForStorage(question, index = 0, subjectName = 'General
     delete normalized.acceptedAnswers;
   } else if (type === 'yesno') {
     // Store the canonical correct answer as 'Yes' or 'No'. Options are not used
-    // ‚Äî student renders two fixed radio buttons.
+    // ó student renders two fixed radio buttons.
     const yesNoAnswer = /^(y(es)?|true|1)$/i.test(baseAnswer) ? 'Yes' : (/^(n(o)?|false|0)$/i.test(baseAnswer) ? 'No' : 'Yes');
     normalized.options = [];
     normalized.answer = yesNoAnswer;
@@ -4612,7 +4612,7 @@ function decodeQuizFromString(encoded) {
   } catch(e) { return null; }
 }
 
-// A portable-link / portable-code quiz carries no owner ‚Äî stamp the importing
+// A portable-link / portable-code quiz carries no owner ó stamp the importing
 // teacher (if there is one) so a later push doesn't land in Supabase with an
 // empty teacher_id and orphan all of that quiz's submissions on read.
 function stampImportedQuizOwner(quiz) {
@@ -4731,7 +4731,7 @@ function quizIdFromAccess(access) {
 
 // Fetch one quiz by id from the public GET /api/quizzes/<id>. This is THE path a
 // student takes when all they have is the 6-digit code / magic link and the
-// quiz isn't on this device yet. Single attempt ‚Äî they can retry the button.
+// quiz isn't on this device yet. Single attempt ó they can retry the button.
 async function fetchQuizFromCloudByAccess(access) {
   const id = quizIdFromAccess(access);
   if (!id || !canUseNetworkSync()) return null;
@@ -4741,7 +4741,7 @@ async function fetchQuizFromCloudByAccess(access) {
       headers: getAuthSessionToken() ? withAuthHeader({}) : {}
     });
     if (!res.ok) {
-      console.warn('Quiz lookup failed for', id, '‚Äî HTTP', res.status);
+      console.warn('Quiz lookup failed for', id, 'ó HTTP', res.status);
       return null;
     }
     const payload = await res.json();
@@ -4751,11 +4751,11 @@ async function fetchQuizFromCloudByAccess(access) {
       return null;
     }
     // Merge the cloud quiz into local storage so subsequent lookups (and the
-    // exam flow) find it. Don't re-upload ‚Äî skipNetworkSync.
+    // exam flow) find it. Don't re-upload ó skipNetworkSync.
     const localQuizzes = getAllQuizzes({ includeDeleted: true });
     const merged = mergeRecordMapForSync(localQuizzes || {}, { [cloudQuiz.id]: cloudQuiz });
     saveAllQuizzes(merged, { skipNetworkSync: true });
-    // Authenticated callers (the owner) also get this quiz's submissions back ‚Äî
+    // Authenticated callers (the owner) also get this quiz's submissions back ó
     // merge those too so the teacher's results view is current.
     if (Array.isArray(payload.submissions) && payload.submissions.length) {
       const localSubs = getAllSubmissions({ includeDeleted: true });
@@ -4773,7 +4773,7 @@ async function fetchQuizFromCloudByAccess(access) {
 // that has no teacherId (so it stops being an "orphan"). These are the quizzes
 // the rest of the app filters OUT of "your" quiz list and OUT of Force Sync
 // Now, so they never make it into pushSingleQuizToCloud where the inline stamp
-// lives ‚Äî they sit on the cloud with an empty teacher_id column and the bulk
+// lives ó they sit on the cloud with an empty teacher_id column and the bulk
 // submissions read silently drops every one of their results. After stamping
 // we fire-and-forget a per-quiz auto-push for each one so the server's
 // teacher_id column gets populated and the submissions become visible.
@@ -4811,7 +4811,7 @@ function reclaimOrphanLocalQuizzes() {
 }
 
 // Pull ONE quiz + its submissions via GET /api/quizzes/<id>. This is the small,
-// reliable read the teacher's results view uses ‚Äî unlike GET /api/state, which
+// reliable read the teacher's results view uses ó unlike GET /api/state, which
 // ships every quiz (images and all) plus every submission and tends to die mid
 // transfer on a flaky mobile connection (ERR_HTTP2_PING_FAILED). The quiz owner
 // gets { quiz, submissions } back; merge both into local storage. Returns true
@@ -4825,26 +4825,26 @@ async function pullQuizSubmissionsFromCloud(quizId) {
       headers: withAuthHeader({})
     });
     if (!res.ok) {
-      console.warn('Quiz/submissions pull failed for', id, '‚Äî HTTP', res.status);
+      console.warn('Quiz/submissions pull failed for', id, 'ó HTTP', res.status);
       return false;
     }
     const payload = await res.json();
     if (!Array.isArray(payload.submissions)) {
-      console.warn('Quiz/submissions pull for', id, '‚Äî response had no submissions array');
+      console.warn('Quiz/submissions pull for', id, 'ó response had no submissions array');
       return true;
     }
     const cloudSubs = payload.submissions.filter((s) => s && typeof s === 'object');
-    console.log(`Quiz ${id}: cloud returned ${payload.submissions.length} row(s), ${cloudSubs.length} usable ‚Äî`,
+    console.log(`Quiz ${id}: cloud returned ${payload.submissions.length} row(s), ${cloudSubs.length} usable ó`,
       cloudSubs.map((s) => ({ sid: s.submissionId, qid: s.quizId, email: s.email, when: s.submittedAt, deleted: !!s.deletedAt })));
     // Merge cloud over local (cloud as primary, so a live cloud copy can't be
     // beaten by a stale local one of the same id), then write straight to
-    // storage ‚Äî going through saveAllSubmissions re-merges local "deleted"
+    // storage ó going through saveAllSubmissions re-merges local "deleted"
     // tombstones back in, which can hide a freshly-pulled live submission.
     const localStored = getAllStoredSubmissions();
     const merged = mergeSubmissionRecordsForSync(cloudSubs, Array.isArray(localStored) ? localStored : []);
     const forQuiz = merged.filter((s) => s && String(s.quizId) === String(id));
     const liveForQuiz = forQuiz.filter((s) => !isDeletedSubmission(s));
-    console.log(`Quiz ${id}: after merge ‚Äî ${liveForQuiz.length} live / ${forQuiz.length} total for this quiz, ${merged.length} submissions overall.`);
+    console.log(`Quiz ${id}: after merge ó ${liveForQuiz.length} live / ${forQuiz.length} total for this quiz, ${merged.length} submissions overall.`);
     const slimmed = slimSubmissionListForStorage(merged);
     const slimmedForQuiz = slimmed.filter((s) => s && String(s.quizId) === String(id));
     const wrote = writeSubmissionsToStorage(slimmed, id);
@@ -4860,9 +4860,9 @@ async function pullQuizSubmissionsFromCloud(quizId) {
       // submissions array. Keep THIS quiz's submissions in memory for the rest
       // of the session so the Results view still renders them (it reads through
       // getAllStoredSubmissions, which overlays this map). The cloud keeps the
-      // canonical record ‚Äî nothing is lost.
+      // canonical record ó nothing is lost.
       _cloudSubmissionsFallback.set(String(id), slimmedForQuiz);
-      console.error(`Quiz ${id}: localStorage is full ‚Äî showing this quiz's ${slimmedForQuiz.length} submission(s) straight from the cloud without persisting them. Ask the teacher to clear old browsing data.`);
+      console.error(`Quiz ${id}: localStorage is full ó showing this quiz's ${slimmedForQuiz.length} submission(s) straight from the cloud without persisting them. Ask the teacher to clear old browsing data.`);
     }
     return true;
   } catch (e) {
@@ -4896,7 +4896,7 @@ async function resolveQuizFromAccessWithSync(access) {
   let quiz = resolveQuizFromAccess(access);
   if (quiz || !canUseNetworkSync()) return quiz;
   // Students have no session, so the bulk GET /api/state is a guaranteed no-op
-  // for them ‚Äî go straight to the public per-quiz endpoint.
+  // for them ó go straight to the public per-quiz endpoint.
   await fetchQuizFromCloudByAccess(access);
   quiz = resolveQuizFromAccess(access);
   if (quiz) return quiz;
@@ -5639,7 +5639,7 @@ function renderTeacherAuth() {
       if (id === SUPER_ADMIN_EMAIL) ensureSuperAdminAccount();
       setBusy(true, createMode ? 'create' : 'login');
       try {
-        // Path A: server is reachable ‚Üí authenticate against /api/auth/teacher/*
+        // Path A: server is reachable ? authenticate against /api/auth/teacher/*
         if (canUseNetworkSync()) {
           if (createMode) {
             if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
@@ -5679,7 +5679,7 @@ function renderTeacherAuth() {
             // The super-admin password is server-only and never cached locally.
             if (!isAdminLogin) await recordLocalAuthForPassword(id, password);
             // Pull the shared state now so this device actually has a teacher
-            // record (and quizzes/submissions) before the workspace renders ‚Äî
+            // record (and quizzes/submissions) before the workspace renders ó
             // otherwise a wiped device authenticates fine but getCurrentTeacher()
             // is empty and openTeacherWorkspace bounces straight back to login.
             await pullSharedStateSilently({
@@ -5689,7 +5689,7 @@ function renderTeacherAuth() {
             }).catch(() => {});
           }
         } else {
-          // Path B: offline. Allow login only ‚Äî never registration ‚Äî and only
+          // Path B: offline. Allow login only ó never registration ó and only
           // when we have a previously cached PBKDF2 hash from a prior online login.
           if (createMode) {
             return showNotification('Creating a teacher account requires the OPE server. Connect to a network and try again.', 'error', 8000);
@@ -5943,12 +5943,12 @@ function renderTeacherQuizzes() {
   // teacher in one shot. That triggered a full /api/state pull (huge egress)
   // and, on shared accounts, made it easy to thrash the backend. Per-quiz
   // sync now lives in the Test Manager dropdown next to each quiz; the bulk
-  // option is moved to Settings ‚Üí Force Sync Now.
+  // option is moved to Settings ? Force Sync Now.
   const syncHelp = canUseNetworkSync()
-    ? `<div class="card small" style="margin:0 0 16px;padding:12px 14px;background:#F0F9FF;border-color:#BAE6FD;color:#075985;line-height:1.55">Sync one quiz at a time using <strong>Test Manager ‚Üí Sync To Cloud</strong> on the row below. Need a full refresh? Open <button id="openSyncSettingsFromQuizzesInfo" class="btn btn-ghost btn-sm" style="padding:2px 8px;margin:0 2px">Settings ‚Üí Cloud Sync</button> and use Force Sync Now.</div>`
+    ? `<div class="card small" style="margin:0 0 16px;padding:12px 14px;background:#F0F9FF;border-color:#BAE6FD;color:#075985;line-height:1.55">Sync one quiz at a time using <strong>Test Manager ? Sync To Cloud</strong> on the row below. Need a full refresh? Open <button id="openSyncSettingsFromQuizzesInfo" class="btn btn-ghost btn-sm" style="padding:2px 8px;margin:0 2px">Settings ? Cloud Sync</button> and use Force Sync Now.</div>`
     : '';
   // Only surface the "not active" card after a sync the teacher actually
-  // triggered failed ‚Äî a quiet background read should never plant this banner.
+  // triggered failed ó a quiet background read should never plant this banner.
   const syncNotice = (networkSyncFailed && lastSyncFailedForUser)
     ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now.<div style="margin-top:8px;line-height:1.6">${escapeHtml(networkSyncFailureMessage || 'Fix the backend connection before sending quiz IDs or links to students.')}</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button id="openSyncSettingsFromQuizzes" class="btn btn-ghost btn-sm">Cloud Sync Settings</button><button id="testSyncFromQuizzes" class="btn btn-primary btn-sm">Test Connection</button></div></div>`
     : '';
@@ -5977,7 +5977,7 @@ function renderTeacherQuizzes() {
     };
     const all = getAllQuizzes();
     const myEmail = normalizeEmail(state.teacherId);
-    // Include unowned quizzes too ‚Äî the reclaim pass will adopt them as the
+    // Include unowned quizzes too ó the reclaim pass will adopt them as the
     // current teacher's so they show up in the dashboard and can be re-synced.
     const keys = Object.keys(all).filter(k => {
       const qOwner = normalizeEmail(all[k].teacherId || '');
@@ -6032,7 +6032,7 @@ function renderTeacherQuizzes() {
           const triggerBtn = event.currentTarget;
           const originalLabel = triggerBtn.textContent;
           triggerBtn.disabled = true;
-          triggerBtn.textContent = 'Syncing‚Ä¶';
+          triggerBtn.textContent = 'SyncingÖ';
           userInitiatedSync = true;
           lastSyncFailedForUser = false;
           try {
@@ -6468,16 +6468,16 @@ function showQuizSetDetails(quizId) {
       };
       const quizzes = getAllQuizzes();
       quizzes[updatedQuiz.id] = updatedQuiz;
-      // Persist locally without firing save()'s bulk PUT to /api/state/quizzes ‚Äî
+      // Persist locally without firing save()'s bulk PUT to /api/state/quizzes ó
       // pushSingleQuizToCloud below pushes this one quiz through /api/quizzes/<id>
       // and the syncSharedKeys fallback only fires if that per-quiz PUT failed.
       saveAllQuizzes(quizzes, { skipNetworkSync: true });
       const didRegrade = regradeSubmissionsForQuiz(updatedQuiz);
       if (state.currentQuiz && state.currentQuiz.id === updatedQuiz.id) state.currentQuiz = updatedQuiz;
-      // Automatic per-quiz upload ‚Äî ONE attempt, no retry loop (the manual
+      // Automatic per-quiz upload ó ONE attempt, no retry loop (the manual
       // "Sync To Cloud" button is the retrying recovery path).
       const singleQuizOk = await pushSingleQuizToCloud(updatedQuiz, { auto: true });
-      // Submissions for THIS quiz only ‚Äî bulk PUT /api/state/submissions is
+      // Submissions for THIS quiz only ó bulk PUT /api/state/submissions is
       // blocked for teacher sessions (would re-upload every other quiz's
       // submissions too). Regraded rows ride the per-quiz endpoint instead.
       let submissionsCloudOk = true;
@@ -6641,8 +6641,8 @@ function renderSettingsView() {
               <div class="card" style="padding:12px;border:1px solid #DBEAFE;box-shadow:none">
                 <div style="font-weight:800;color:#1D4ED8">${escapeHtml(tokenPackage.label)}</div>
                 <div class="small" style="margin-top:4px">${tokenPackage.unlimitedDays
-                  ? `${formatNaira(tokenPackage.price)} ‚Ä¢ ${tokenPackage.unlimitedDays} days on one registered device`
-                  : `${tokenPackage.tokens} Token${tokenPackage.tokens === 1 ? '' : 's'} ‚Ä¢ ${formatNaira(tokenPackage.price)} ‚Ä¢ ${formatNaira(tokenPackage.effectivePrice)} per quiz`}</div>
+                  ? `${formatNaira(tokenPackage.price)} ï ${tokenPackage.unlimitedDays} days on one registered device`
+                  : `${tokenPackage.tokens} Token${tokenPackage.tokens === 1 ? '' : 's'} ï ${formatNaira(tokenPackage.price)} ï ${formatNaira(tokenPackage.effectivePrice)} per quiz`}</div>
                 <div class="small" style="margin-top:4px">${escapeHtml(tokenPackage.useCase || '')}</div>
               </div>
             `).join('')}
@@ -6866,11 +6866,11 @@ function renderSettingsView() {
     if (forceSyncNowBtn) forceSyncNowBtn.onclick = async () => {
       forceSyncNowBtn.disabled = true;
       const originalLabel = forceSyncNowBtn.textContent;
-      forceSyncNowBtn.textContent = 'Syncing‚Ä¶';
+      forceSyncNowBtn.textContent = 'SyncingÖ';
       userInitiatedSync = true;
       lastSyncFailedForUser = false;
       try {
-        // Quizzes are excluded from the bulk flush ‚Äî they sync exclusively
+        // Quizzes are excluded from the bulk flush ó they sync exclusively
         // through /api/quizzes/<id>. Fan them out one at a time below so a
         // teacher with 100 quizzes pushes 100 small requests instead of one
         // 1.7 MB blob to /api/state/quizzes.
@@ -6879,12 +6879,12 @@ function renderSettingsView() {
           .forEach(markNetworkKeyDirty);
         await flushPendingNetworkWrites([], { pullAfter: false });
         const ownerId = normalizeEmail(state.teacherId);
-        // Include unowned quizzes too ‚Äî pushSingleQuizToCloud stamps the
+        // Include unowned quizzes too ó pushSingleQuizToCloud stamps the
         // current teacher on them, which is what populates the server's
         // teacher_id column so the bulk submissions read stops dropping their
         // results. Without this, an orphan quiz (no local teacherId) was
         // filtered out HERE, never made it to pushSingleQuizToCloud's stamp,
-        // and stayed invisible forever ‚Äî that's why "X synced successfully"
+        // and stayed invisible forever ó that's why "X synced successfully"
         // was a count smaller than the dashboard list.
         const ownQuizzes = Object.values(getAllQuizzes() || {}).filter((quiz) => {
           if (!quiz || !quiz.id) return false;
@@ -6892,7 +6892,7 @@ function renderSettingsView() {
           const qOwner = normalizeEmail(quiz.teacherId || '');
           return !qOwner || qOwner === ownerId;
         });
-        // Try every quiz in this set, even if one fails ‚Äî a "wrong teacherId"
+        // Try every quiz in this set, even if one fails ó a "wrong teacherId"
         // / oversize / transient failure on one shouldn't block the others.
         let syncedQuizzes = 0;
         const failedQuizIds = [];
@@ -6915,7 +6915,7 @@ function renderSettingsView() {
         } else if (failureCount > 0) {
           lastSyncFailedForUser = true;
           console.warn('Force Sync Now: failed quiz ids:', failedQuizIds);
-          showNotification(`${syncedQuizzes} of ${ownQuizzes.length} quiz(es) synced ‚Äî ${failureCount} failed (${failedQuizIds.slice(0, 3).join(', ')}${failureCount > 3 ? '‚Ä¶' : ''}). ${getSharedSyncWarningMessage()}`, 'warning', 9000);
+          showNotification(`${syncedQuizzes} of ${ownQuizzes.length} quiz(es) synced ó ${failureCount} failed (${failedQuizIds.slice(0, 3).join(', ')}${failureCount > 3 ? 'Ö' : ''}). ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         } else {
           lastSyncFailedForUser = true;
           showNotification(`Quizzes uploaded, but refreshing the latest data hit a snag. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
@@ -7816,9 +7816,9 @@ function formatCalculatorValue(value) {
 
 function sanitizeCalculatorExpression(expression) {
   return (expression || '')
-    .replace(/√∑/g, '/')
-    .replace(/√ó/g, '*')
-    .replace(/œÄ/g, 'pi')
+    .replace(/˜/g, '/')
+    .replace(/◊/g, '*')
+    .replace(/p/g, 'pi')
     .replace(/\^/g, '**')
     .replace(/(\d+(?:\.\d+)?)%/g, '($1/100)')
     .replace(/\)%/g, ')/100');
@@ -7883,8 +7883,8 @@ function getCalculatorButtonLayout(calculatorType = getQuizCalculatorType(state.
     return [
       [{ label: 'MC', action: 'mc' }, { label: 'MR', action: 'mr' }, { label: 'M+', action: 'mplus' }, { label: 'M-', action: 'mminus' }, { label: 'AC', action: 'clear' }],
       [{ label: 'C', action: 'backspace' }, { label: '(', value: '(' }, { label: ')', value: ')' }, { label: 'a b/c', value: 'frac(' }, { label: '%', value: '%' }],
-      [{ label: '7', value: '7' }, { label: '8', value: '8' }, { label: '9', value: '9' }, { label: '√∑', value: '√∑' }, { label: '‚àö', value: 'sqrt(' }],
-      [{ label: '4', value: '4' }, { label: '5', value: '5' }, { label: '6', value: '6' }, { label: '√ó', value: '√ó' }, { label: 'x¬≤', value: '^2' }],
+      [{ label: '7', value: '7' }, { label: '8', value: '8' }, { label: '9', value: '9' }, { label: '˜', value: '˜' }, { label: 'v', value: 'sqrt(' }],
+      [{ label: '4', value: '4' }, { label: '5', value: '5' }, { label: '6', value: '6' }, { label: '◊', value: '◊' }, { label: 'x≤', value: '^2' }],
       [{ label: '1', value: '1' }, { label: '2', value: '2' }, { label: '3', value: '3' }, { label: '-', value: '-' }, { label: '1/x', value: 'inv(' }],
       [{ label: '+/-', action: 'sign' }, { label: '0', value: '0' }, { label: '.', value: '.' }, { label: '+', value: '+' }, { label: '=', action: 'equals' }]
     ];
@@ -7893,12 +7893,12 @@ function getCalculatorButtonLayout(calculatorType = getQuizCalculatorType(state.
     [{ label: _calculatorMode, action: 'mode' }, { label: 'MC', action: 'mc' }, { label: 'MR', action: 'mr' }, { label: 'M+', action: 'mplus' }, { label: 'M-', action: 'mminus' }],
     [{ label: 'AC', action: 'clear' }, { label: 'C', action: 'backspace' }, { label: '(', value: '(' }, { label: ')', value: ')' }, { label: 'a b/c', value: 'frac(' }],
     [{ label: 'sin', value: 'sin(' }, { label: 'cos', value: 'cos(' }, { label: 'tan', value: 'tan(' }, { label: 'log', value: 'log(' }, { label: 'ln', value: 'ln(' }],
-    [{ label: '7', value: '7' }, { label: '8', value: '8' }, { label: '9', value: '9' }, { label: '√∑', value: '√∑' }, { label: '‚àö', value: 'sqrt(' }],
-    [{ label: '4', value: '4' }, { label: '5', value: '5' }, { label: '6', value: '6' }, { label: '√ó', value: '√ó' }, { label: 'x¬≤', value: '^2' }],
+    [{ label: '7', value: '7' }, { label: '8', value: '8' }, { label: '9', value: '9' }, { label: '˜', value: '˜' }, { label: 'v', value: 'sqrt(' }],
+    [{ label: '4', value: '4' }, { label: '5', value: '5' }, { label: '6', value: '6' }, { label: '◊', value: '◊' }, { label: 'x≤', value: '^2' }],
     [{ label: '1', value: '1' }, { label: '2', value: '2' }, { label: '3', value: '3' }, { label: '-', value: '-' }, { label: '1/x', value: 'inv(' }],
     [{ label: '+/-', action: 'sign' }, { label: '0', value: '0' }, { label: '.', value: '.' }, { label: '+', value: '+' }, { label: '%', value: '%' }],
-    [{ label: 'œÄ', value: 'œÄ' }, { label: 'x^y', value: '^' }, { label: 'n!', value: 'fact(' }, { label: 'nPr', value: 'nPr(' }, { label: 'nCr', value: 'nCr(' }],
-    [{ label: 'x¬≥', value: 'cube(' }, { label: '¬≥‚àöx', value: 'cbrt(' }, { label: 'sin‚Åª¬π', value: 'asin(' }, { label: 'cos‚Åª¬π', value: 'acos(' }, { label: 'tan‚Åª¬π', value: 'atan(' }],
+    [{ label: 'p', value: 'p' }, { label: 'x^y', value: '^' }, { label: 'n!', value: 'fact(' }, { label: 'nPr', value: 'nPr(' }, { label: 'nCr', value: 'nCr(' }],
+    [{ label: 'x≥', value: 'cube(' }, { label: '≥vx', value: 'cbrt(' }, { label: 'sin?π', value: 'asin(' }, { label: 'cos?π', value: 'acos(' }, { label: 'tan?π', value: 'atan(' }],
     [{ label: '10^x', value: 'exp10(' }, { label: 'e^x', value: 'expE(' }, { label: '=', action: 'equals', wide: true }]
   ];
 }
@@ -7983,7 +7983,7 @@ function renderExamCalculatorWidget(open = false) {
       <button type="button" id="closeExamCalculator" class="btn btn-ghost btn-sm">Close</button>
     </div>
     <div class="exam-calculator-screen" style="border:1px solid #CBD5E1;border-radius:14px;padding:12px 14px;background:#0F172A;color:#F8FAFC;margin-bottom:12px">
-      <div style="font-size:12px;letter-spacing:.08em;color:#CBD5E1">${calculatorType === 'scientific' ? `${_calculatorMode} ‚Ä¢ ` : ''}MEM ${formatCalculatorValue(_calculatorMemory)}</div>
+      <div style="font-size:12px;letter-spacing:.08em;color:#CBD5E1">${calculatorType === 'scientific' ? `${_calculatorMode} ï ` : ''}MEM ${formatCalculatorValue(_calculatorMemory)}</div>
       <div style="font-size:24px;font-weight:800;line-height:1.25;word-break:break-all;min-height:32px">${escapeHtml(_calculatorExpression || '0')}</div>
     </div>
     <div class="exam-calculator-grid" style="display:grid;gap:8px">
@@ -8055,7 +8055,7 @@ function renderQuizTake() {
       <div class="exam-meta">
         <div>
           <div class="h2 exam-title">${escapeHtml(q.title)}</div>
-          <div class="small" id="examInstitutionLine">${escapeHtml(q.examName || '')}${initialSections.length ? ` ‚Ä¢ ${initialSections.length} subject(s)` : ''}</div>
+          <div class="small" id="examInstitutionLine">${escapeHtml(q.examName || '')}${initialSections.length ? ` ï ${initialSections.length} subject(s)` : ''}</div>
           <div class="small" id="examSubjectMeta" style="margin-top:4px"></div>
         </div>
       </div>
@@ -8167,7 +8167,7 @@ function renderQuizTake() {
       const currentSection = subjectSections[position.sectionIndex] || getCurrentSection();
       const subjectMeta = document.getElementById('examSubjectMeta');
       if (subjectMeta) {
-        subjectMeta.textContent = `${currentSection.name} ‚Ä¢ Question ${position.localNumber} of ${position.totalInSubject} ‚Ä¢ ${countAnsweredQuestionsInSection(currentSection, sub.answers || {})}/${currentSection.total} answered in this subject`;
+        subjectMeta.textContent = `${currentSection.name} ï Question ${position.localNumber} of ${position.totalInSubject} ï ${countAnsweredQuestionsInSection(currentSection, sub.answers || {})}/${currentSection.total} answered in this subject`;
       }
       renderSubjectTabs();
     };
@@ -8203,7 +8203,7 @@ function renderQuizTake() {
         if (globalIndex === sub.currentIndex) classes.push('palette-current');
         return `<div class="${classes.join(' ')}" data-index="${globalIndex}">${localIndex + 1}</div>`;
       });
-      const heading = `Question Palette ‚Ä¢ ${escapeHtml(currentSection.name)}`;
+      const heading = `Question Palette ï ${escapeHtml(currentSection.name)}`;
       pal.innerHTML = `<div class="small" style="margin-bottom:8px">${heading}</div><div class="palette-grid">${items.join('')}</div>`;
       drawer.innerHTML = `<div class="small" style="margin-bottom:8px">${heading}</div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">${items.join('')}</div>`;
       [pal, drawer].forEach((scope) => scope.querySelectorAll('.palette-item').forEach((el) => {
@@ -8642,7 +8642,7 @@ function getPublicAppBaseUrl() {
 }
 
 // Build a complete standalone HTML document and write it into a new window.
-// Used by the correction and facility-index "PDF" buttons ‚Äî instead of
+// Used by the correction and facility-index "PDF" buttons ó instead of
 // generating a PDF in this tab (which had blank-page failures) we open a
 // print-ready report. Browser "Print > Save as PDF" gives a clean PDF.
 function openPrintableDocumentInNewWindow(title, innerHtml) {
@@ -8797,7 +8797,7 @@ function writePrintPayload(type, id, data) {
   try {
     const key = `${PRINT_PAYLOAD_PREFIX}${type}_${id}`;
     localStorage.setItem(key, JSON.stringify({ ...(data || {}), savedAt: Date.now() }));
-  } catch (e) { /* quota or serialization error ‚Äî fall back to lookup */ }
+  } catch (e) { /* quota or serialization error ó fall back to lookup */ }
 }
 
 function readPrintPayload(type, id) {
@@ -9535,19 +9535,19 @@ function optionText(question, letter) {
 
 function toSuperscriptText(value = '') {
   const map = {
-    '0': '‚Å∞',
-    '1': '¬π',
-    '2': '¬≤',
-    '3': '¬≥',
-    '4': '‚Å¥',
-    '5': '‚Åµ',
-    '6': '‚Å∂',
-    '7': '‚Å∑',
-    '8': '‚Å∏',
-    '9': '‚Åπ',
-    '-': '‚Åª',
-    '‚àí': '‚Åª',
-    '+': '‚Å∫'
+    '0': '∞',
+    '1': 'π',
+    '2': '≤',
+    '3': '≥',
+    '4': '4',
+    '5': '5',
+    '6': '6',
+    '7': '7',
+    '8': '8',
+    '9': '?',
+    '-': '?',
+    '-': '?',
+    '+': '?'
   };
   return (value || '').toString().split('').map((char) => map[char] || char).join('');
 }
@@ -9555,13 +9555,13 @@ function toSuperscriptText(value = '') {
 function sanitizeScientificText(value = '') {
   let text = decodeHtmlEntitiesDeep(value);
   text = text.replace(/\u00A0/g, ' ');
-  text = text.replace(/¬©/g, 'Œ©');
-  text = text.replace(/¬ºF/gi, '¬µF');
-  text = text.replace(/Œº/g, '¬µ');
-  text = text.replace(/uF\b/g, '¬µF');
-  text = text.replace(/([0-9])\s*[xX]\s*10\s*(?:\^|\{)\s*([+\-‚àí]?\d+)/g, (_, base, exponent) => `${base} √ó 10${toSuperscriptText(exponent)}`);
-  text = text.replace(/10\s*(?:\^|\{)\s*([+\-‚àí]?\d+)/g, (_, exponent) => `10${toSuperscriptText(exponent)}`);
-  text = text.replace(/\bdeg\s*C\b/gi, '¬∞C');
+  text = text.replace(/©/g, 'O');
+  text = text.replace(/ºF/gi, 'µF');
+  text = text.replace(/µ/g, 'µ');
+  text = text.replace(/uF\b/g, 'µF');
+  text = text.replace(/([0-9])\s*[xX]\s*10\s*(?:\^|\{)\s*([+\--]?\d+)/g, (_, base, exponent) => `${base} ◊ 10${toSuperscriptText(exponent)}`);
+  text = text.replace(/10\s*(?:\^|\{)\s*([+\--]?\d+)/g, (_, exponent) => `10${toSuperscriptText(exponent)}`);
+  text = text.replace(/\bdeg\s*C\b/gi, '∞C');
   return text;
 }
 
@@ -9736,7 +9736,7 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '', quiz });
   const entries = correctionView.entries.slice();
   // The merged `question` carries live edits (topic, explanation, etc.) but
-  // its `options` and `answer` are in LIVE order ‚Äî which doesn't match the
+  // its `options` and `answer` are in LIVE order ó which doesn't match the
   // student's stored letter when the quiz used shuffled options. The
   // snapshot question is what the student actually saw, so we use it for
   // anything index/letter-sensitive (verdict, option highlighting, "student
@@ -9926,7 +9926,7 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
         <section class="pdf-hero avoid-break">
           <div class="pdf-brand">OPE Assessor</div>
           <div class="pdf-title">Student Correction PDF</div>
-          <div class="pdf-subtitle">${escapeHtml(sanitizeScientificText(quiz.title || submission.quizId || 'Quiz'))}${resolvedSubjectName ? ` ‚Ä¢ ${escapeHtml(sanitizeScientificText(resolvedSubjectName))}` : ''}</div>
+          <div class="pdf-subtitle">${escapeHtml(sanitizeScientificText(quiz.title || submission.quizId || 'Quiz'))}${resolvedSubjectName ? ` ï ${escapeHtml(sanitizeScientificText(resolvedSubjectName))}` : ''}</div>
         </section>
         <section class="pdf-section-card pdf-summary-card avoid-break">
           <div class="pdf-section-heading">Student Performance Summary</div>
@@ -9954,14 +9954,14 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
 function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   // Build the full A4-styled HTML in this tab (where we have all the data) and
   // write it directly into a new window. No URL routing, no shared-state pull,
-  // no localStorage hand-off ‚Äî the destination tab opens already rendered.
+  // no localStorage hand-off ó the destination tab opens already rendered.
   if (!submission || !quiz) {
-    showNotification('Cannot open correction view ‚Äî submission or quiz data is missing.', 'error');
+    showNotification('Cannot open correction view ó submission or quiz data is missing.', 'error');
     return Promise.resolve(false);
   }
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '', quiz });
   const resolvedSubjectName = correctionView.subjectName;
-  const title = `Correction ¬∑ ${submission.name || submission.email || 'Student'}${resolvedSubjectName ? ` ¬∑ ${resolvedSubjectName}` : ''}`;
+  const title = `Correction ∑ ${submission.name || submission.email || 'Student'}${resolvedSubjectName ? ` ∑ ${resolvedSubjectName}` : ''}`;
   const innerHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
     showNegativePenalty: opts.showNegativePenalty !== false,
     subjectName: resolvedSubjectName
@@ -10202,7 +10202,7 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
         <section class="facility-hero avoid-break">
           <div class="facility-brand">OPE Assessor</div>
           <div class="facility-title">Facility Index PDF</div>
-          <div class="facility-subtitle">${escapeHtml(subjectName)} ‚Ä¢ ${escapeHtml(sanitizeScientificText(quiz.title || quiz.id || 'Quiz'))}</div>
+          <div class="facility-subtitle">${escapeHtml(subjectName)} ï ${escapeHtml(sanitizeScientificText(quiz.title || quiz.id || 'Quiz'))}</div>
         </section>
         <section class="facility-summary avoid-break">
           <div class="facility-section-heading">Summary</div>
@@ -10222,12 +10222,12 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
               ${section.items.map((item) => {
                 const percentText = item.facilityIndex == null ? 'No attempts' : `${Math.round(item.facilityIndex * 100)}%`;
                 const correctAnswerText = item.answer ? `${item.answer}. ${getDisplayOptionText(item, item.answer)}` : 'Not set';
-                const optionCounts = (item.optionCounts || []).map((option) => `${option.letter}: ${option.count}`).join(' ‚Ä¢ ');
+                const optionCounts = (item.optionCounts || []).map((option) => `${option.letter}: ${option.count}`).join(' ï ');
                 const longCardClass = isPdfExportLongCard(item.question || '', item.explanation || '', item.learningPoint || item.keyConcept || '') ? ' long-card' : '';
                 return `
                   <article class="facility-question-card avoid-break${longCardClass}" style="--band-fill:${band.color};--band-accent:${band.accent}">
                     <div class="facility-question-head">
-                      <div class="facility-question-title">Question ${item.index} ‚Ä¢ ${percentText} ‚Ä¢ ${escapeHtml(section.label)}</div>
+                      <div class="facility-question-title">Question ${item.index} ï ${percentText} ï ${escapeHtml(section.label)}</div>
                       <div class="facility-question-chip">${escapeHtml(section.label)}</div>
                     </div>
                     ${renderQuestionMediaAssets(item, 'before')}
@@ -10236,7 +10236,7 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
                     <div class="facility-meta-line"><strong>Options:</strong></div>
                     ${buildPdfOptionListHtml(item, { correctAnswer: item.answer || '' })}
                     <div class="facility-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
-                    <div class="facility-meta-line"><strong>Seen:</strong> ${item.seen} ‚Ä¢ <strong>Attempted:</strong> ${item.attempted} ‚Ä¢ <strong>Correct:</strong> ${item.correct} ‚Ä¢ <strong>Wrong:</strong> ${Math.max(0, item.attempted - item.correct)}</div>
+                    <div class="facility-meta-line"><strong>Seen:</strong> ${item.seen} ï <strong>Attempted:</strong> ${item.attempted} ï <strong>Correct:</strong> ${item.correct} ï <strong>Wrong:</strong> ${Math.max(0, item.attempted - item.correct)}</div>
                     <div class="facility-meta-line"><strong>Topic:</strong> <div class="rich-text-output">${renderRichTextHtml(item.topic || 'Not set')}</div></div>
                     <div class="facility-meta-line"><strong>Option counts:</strong> ${escapeHtml(optionCounts || 'No option counts yet.')}</div>
                     <div class="facility-meta-line facility-writeup"><strong>Explanation:</strong> <div class="rich-text-output">${renderRichTextHtml(item.explanation || 'No explanation provided yet.')}</div></div>
@@ -10255,11 +10255,11 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
   // Same approach as the correction PDF: render the full A4-styled HTML here
   // and document.write it into a new window. No URL routing, no race.
   if (!quiz || !quiz.id) {
-    showNotification('Quiz information is missing ‚Äî facility index cannot be opened.', 'error');
+    showNotification('Quiz information is missing ó facility index cannot be opened.', 'error');
     return Promise.resolve(false);
   }
   const subjectName = (options.subjectName || '').toString().trim() || 'General';
-  const title = `Facility Index ¬∑ ${quiz.title || quiz.id} ¬∑ ${subjectName}`;
+  const title = `Facility Index ∑ ${quiz.title || quiz.id} ∑ ${subjectName}`;
   const innerHtml = buildFacilityIndexPdfDocumentHtml(quiz, Array.isArray(data) ? data : [], { subjectName });
   const ok = openPrintableDocumentInNewWindow(title, innerHtml);
   if (ok && options.successMessage !== '') {
@@ -10855,7 +10855,7 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
       <div class="page-heading">
         <div>
           <div class="h2">Choose Result Summary Format</div>
-          <div class="small">${escapeHtml(quiz.title || quiz.id || 'Quiz')} ‚Ä¢ ${subjectColumns.length} subjects</div>
+          <div class="small">${escapeHtml(quiz.title || quiz.id || 'Quiz')} ï ${subjectColumns.length} subjects</div>
         </div>
         <button id="closeTeacherSummaryPdfFormatModal" class="btn btn-ghost">Close</button>
       </div>
@@ -11066,7 +11066,7 @@ function buildEssayGradingPanelHtml(quiz, submission) {
   if (!essayItems.length) return '';
   const rows = essayItems.map((item) => `
     <div class="card-beautiful essay-grade-row" data-source-id="${escapeHtml(item.sourceId)}" style="padding:14px;margin-top:12px">
-      <div class="small" style="color:#475569;margin-bottom:4px">Question ${item.index + 1} ‚Ä¢ Long Answer (Essay)</div>
+      <div class="small" style="color:#475569;margin-bottom:4px">Question ${item.index + 1} ï Long Answer (Essay)</div>
       <div class="rich-text-output" style="margin-bottom:8px;font-weight:600">${renderRichTextHtml(item.question.question || '')}</div>
       <div class="small" style="color:#475569">Student answer:</div>
       <div style="white-space:pre-wrap;border:1px solid #E2E8F0;border-radius:10px;padding:10px;background:#F8FAFC;margin-top:6px;line-height:1.55">${escapeHtml(item.studentAnswer)}</div>
@@ -11162,7 +11162,7 @@ function wireEssayGradingPanel(quiz, submission) {
 
 // Download every essay answer in a submission as a Word-readable .doc file.
 // Uses the long-standing Word HTML format trick (application/msword + an
-// HTML body) ‚Äî works in MS Word, Google Docs, LibreOffice, and on phones.
+// HTML body) ó works in MS Word, Google Docs, LibreOffice, and on phones.
 function downloadSubmissionEssaysAsDoc(submission, quiz) {
   if (!submission) return showNotification('No submission to export.', 'error');
   const questions = Array.isArray(submission.allQuestions) ? submission.allQuestions : [];
@@ -11203,7 +11203,7 @@ function downloadSubmissionEssaysAsDoc(submission, quiz) {
 <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
 <head>
   <meta charset="utf-8" />
-  <title>${escapeHtml(`${studentName} ‚Äî Essay Answers`)}</title>
+  <title>${escapeHtml(`${studentName} ó Essay Answers`)}</title>
   <!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
   <style>
     body { font-family: Calibri, Arial, sans-serif; font-size: 12pt; color: #000; line-height: 1.5; }
@@ -11213,7 +11213,7 @@ function downloadSubmissionEssaysAsDoc(submission, quiz) {
   </style>
 </head>
 <body>
-  <h1>Essay Answers ‚Äî ${escapeHtml(quizTitle)}</h1>
+  <h1>Essay Answers ó ${escapeHtml(quizTitle)}</h1>
   <p>Student: <strong>${escapeHtml(studentName)}</strong></p>
   ${studentEmail ? `<p>Email / ID: ${escapeHtml(studentEmail)}</p>` : ''}
   ${submittedAt ? `<p>Submitted: ${escapeHtml(submittedAt)}</p>` : ''}
@@ -11222,7 +11222,7 @@ function downloadSubmissionEssaysAsDoc(submission, quiz) {
 </body>
 </html>
   `.trim();
-  const blob = new Blob(['Ôªø', doc], { type: 'application/msword' });
+  const blob = new Blob(['?', doc], { type: 'application/msword' });
   const safeName = `${studentName} - essays - ${quizTitle}`.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim();
   const filename = `${safeName || 'essays'}.doc`;
   if (typeof saveAs === 'function') {
@@ -11446,7 +11446,7 @@ function buildStudentTopicBreakdownHtml(quiz, submission) {
                       <div class="cert-topic-percent">${percent}%</div>
                     </div>
                     <div class="cert-topic-bar"><i style="width:${Math.max(0, Math.min(100, percent))}%"></i></div>
-                    <div class="cert-topic-meta">${correct} correct ‚Ä¢ ${wrong} wrong ‚Ä¢ ${unanswered} unanswered ‚Ä¢ ${total} total</div>
+                    <div class="cert-topic-meta">${correct} correct ï ${wrong} wrong ï ${unanswered} unanswered ï ${total} total</div>
                   </div>
                 `;
               }).join('')}
@@ -11511,8 +11511,8 @@ function buildStudentResultSupplementHtml(quiz, submission) {
             <div class="cert-performance-icon">${getResultInfoIconSvg('performance')}</div>
             <div class="cert-performance-copy">
               <div class="cert-performance-subject">${escapeHtml(sanitizeScientificText(item.name || 'General'))}</div>
-              <div class="cert-performance-score">${formatScoreValue(item.score)} / ${formatScoreValue(item.totalMarks || item.total)} ‚Ä¢ ${item.percent || 0}%</div>
-              <div class="cert-performance-meta">${item.correct || 0} correct ‚Ä¢ ${item.attempted || 0} attempted ‚Ä¢ ${item.total || 0} total${item.wrong ? ` ‚Ä¢ ${item.wrong} wrong` : ''}</div>
+              <div class="cert-performance-score">${formatScoreValue(item.score)} / ${formatScoreValue(item.totalMarks || item.total)} ï ${item.percent || 0}%</div>
+              <div class="cert-performance-meta">${item.correct || 0} correct ï ${item.attempted || 0} attempted ï ${item.total || 0} total${item.wrong ? ` ï ${item.wrong} wrong` : ''}</div>
             </div>
           </div>
         `).join('')}
@@ -11524,7 +11524,7 @@ function buildStudentResultSupplementHtml(quiz, submission) {
   return `${performanceHtml}${topicBreakdownHtml}${essayFeedbackHtml}`;
 }
 
-// Per-essay feedback shown on the student's result screen ‚Äî score awarded
+// Per-essay feedback shown on the student's result screen ó score awarded
 // and the teacher's remarks. Only renders if the submission has at least one
 // essay answer.
 function buildStudentEssayFeedbackHtml(quiz, submission) {
@@ -11552,7 +11552,7 @@ function buildStudentEssayFeedbackHtml(quiz, submission) {
       : 'Pending teacher review';
     cards.push(`
       <div class="cert-performance-card avoid-break" style="display:block">
-        <div class="cert-performance-subject">Question ${index + 1} ‚Ä¢ Long Answer</div>
+        <div class="cert-performance-subject">Question ${index + 1} ï Long Answer</div>
         <div class="cert-performance-score" style="margin-top:6px">Score: ${escapeHtml(scoreText)}</div>
         <div class="small" style="margin-top:8px;color:#475569">Your answer:</div>
         <div style="white-space:pre-wrap;border:1px solid #E2E8F0;border-radius:10px;padding:10px;background:#F8FAFC;margin-top:6px;line-height:1.55">${escapeHtml(studentAnswer)}</div>
@@ -11687,7 +11687,7 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
 
         <div class="cert-rank">RANK: ${escapeHtml(rankText)}</div>
         <div class="cert-remark-card avoid-break">
-          <div class="cert-remark-title">${escapeHtml(gradeProfile.label)} ‚Ä¢ ${escapeHtml(gradeProfile.range)}</div>
+          <div class="cert-remark-title">${escapeHtml(gradeProfile.label)} ï ${escapeHtml(gradeProfile.range)}</div>
           <div class="cert-remark-copy">${escapeHtml(gradeProfile.remark)}</div>
         </div>
 
@@ -11698,7 +11698,7 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
               <div class="cert-detail-copy">
                 <div class="cert-detail-label">${escapeHtml(item.label)}</div>
                 <div class="cert-detail-value">${item.value}</div>
-                ${item.kind === 'answered' ? `<div class="cert-detail-subline">${totalQuestions} total question(s) ‚Ä¢ ${formatScoreValue(totalMarks)} total mark(s)</div>` : ''}
+                ${item.kind === 'answered' ? `<div class="cert-detail-subline">${totalQuestions} total question(s) ï ${formatScoreValue(totalMarks)} total mark(s)</div>` : ''}
               </div>
             </div>
           `).join('')}
@@ -11707,8 +11707,8 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
         ${buildPrimaryCertificateSignatureMarkup(quiz)}
         ${renderCertificateVerificationMarkup(quiz, submission)}
 
-        <div class="cert-footer">Verified Digital Result ‚Ä¢ Generated by OPE Assessor</div>
-        <div class="cert-footer-sub">Clean ‚Ä¢ Secure ‚Ä¢ Beautiful ‚Ä¢ Parent-ready</div>
+        <div class="cert-footer">Verified Digital Result ï Generated by OPE Assessor</div>
+        <div class="cert-footer-sub">Clean ï Secure ï Beautiful ï Parent-ready</div>
       </div>
     </div>
   `;
@@ -12003,8 +12003,8 @@ function renderPdfExportView() {
 
 // Anonymous correction fallback: when the student-correction print route can't
 // resolve the submission/quiz from a one-shot payload or local storage, the
-// SPA fetches /api/submissions/share/<shareKey>. That endpoint is public ‚Äî
-// the share key IS the access token ‚Äî so it works without a session, which is
+// SPA fetches /api/submissions/share/<shareKey>. That endpoint is public ó
+// the share key IS the access token ó so it works without a session, which is
 // the normal case for a student opening the link from WhatsApp / email on a
 // device they didn't take the test on.
 const remoteCorrectionCache = new Map();
@@ -12115,7 +12115,7 @@ function renderPrintRouteView() {
         submission = cached.submission || submission;
         quiz = cached.quiz || quiz;
       } else if (!isRemoteCorrectionFetchPending(shareKey)) {
-        // First render with no local data ‚Äî kick off an anonymous fetch and
+        // First render with no local data ó kick off an anonymous fetch and
         // re-render once it lands. Don't await; render the loading state now.
         fetchRemoteCorrectionByShareKey(shareKey);
       }
@@ -12126,12 +12126,12 @@ function renderPrintRouteView() {
     } else if (!submission && remoteFailureReason) {
       notFoundReason = `Could not load the correction: ${remoteFailureReason}. Try again in a moment.`;
     } else if (!submission) {
-      notFoundReason = 'Loading the correction‚Ä¶';
+      notFoundReason = 'Loading the correctionÖ';
     } else if (!quiz) {
-      notFoundReason = 'Loading the quiz for this correction‚Ä¶';
+      notFoundReason = 'Loading the quiz for this correctionÖ';
     }
     if (!notFoundReason) {
-      documentTitle = `Correction ¬∑ ${submission.name || submission.email || 'Student'}`;
+      documentTitle = `Correction ∑ ${submission.name || submission.email || 'Student'}`;
       contentHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
         showNegativePenalty: payload ? payload.showNegativePenalty !== false : (route.showNegativePenalty !== false),
         subjectName: (payload && payload.subject) || route.subject || ''
@@ -12149,13 +12149,13 @@ function renderPrintRouteView() {
         facilityData = computeFacilityIndexFromQuizAndSubmissions(quiz, allSubs);
       }
     }
-    if (!quiz) notFoundReason = 'Loading the facility index. If this message stays up, the quiz is not available on this device yet ‚Äî shared sync has not finished pulling it.';
+    if (!quiz) notFoundReason = 'Loading the facility index. If this message stays up, the quiz is not available on this device yet ó shared sync has not finished pulling it.';
     else {
       if (!Array.isArray(facilityData)) facilityData = [];
       const visibleData = subjectFilter && subjectFilter !== 'General'
         ? facilityData.filter((item) => normalizeSubjectName(item.subject || 'General') === normalizeSubjectName(subjectFilter))
         : facilityData;
-      documentTitle = `Facility Index ¬∑ ${quiz.title || quiz.id}`;
+      documentTitle = `Facility Index ∑ ${quiz.title || quiz.id}`;
       contentHtml = buildFacilityIndexPdfDocumentHtml(quiz, visibleData, { subjectName: subjectFilter || 'General' });
     }
   } else {
@@ -12323,7 +12323,7 @@ function renderPrintRouteView() {
 // True when this submission's result PDF will include the topic-by-topic
 // breakdown. When it does, we lay the PDF out across A4 pages (summary on page
 // one, topics on page two onward) instead of shrinking everything onto a single
-// sheet ‚Äî which was unreadable once the breakdown was long.
+// sheet ó which was unreadable once the breakdown was long.
 function studentResultHasTopicBreakdown(quiz, submission) {
   return !!buildStudentTopicBreakdownHtml(quiz, submission);
 }
@@ -12468,7 +12468,7 @@ function renderResultsView() {
     }).catch(() => {});
   }
   regradeSubmissionsForQuiz(q);
-  // String() both sides ‚Äî a quiz id stored as a number somewhere shouldn't make
+  // String() both sides ó a quiz id stored as a number somewhere shouldn't make
   // its submissions invisible to a strict === against the string id.
   const submissions = getAllSubmissions().filter(s => s && String(s.quizId) === String(q.id));
   console.log(`Results view for quiz ${q.id}: ${submissions.length} submission(s) (of ${getAllSubmissions().length} stored).`);
@@ -12555,7 +12555,7 @@ function renderResultsView() {
     if (btnRefreshResults) btnRefreshResults.onclick = async () => {
       const original = btnRefreshResults.textContent;
       btnRefreshResults.disabled = true;
-      btnRefreshResults.textContent = 'Refreshing‚Ä¶';
+      btnRefreshResults.textContent = 'RefreshingÖ';
       try {
         if (canUseNetworkSync() && getAuthSessionToken()) {
           // The reliable bit first: this quiz's own submissions via the small
@@ -12667,7 +12667,7 @@ function renderResultsView() {
                   ? `<span class="req-badge req-pending" title="${escapeHtml(s.correctionMessage || '')}">Requested</span>`
                   : '<span class="req-badge">None</span>'}
                 <div class="small" style="margin-top:6px">${escapeHtml(correctionContact.label || 'No contact provided')}</div>
-                <div class="small" style="margin-top:4px;color:#64748B">${escapeHtml(correctionShare.label)}${correctionShareStamp ? ` ‚Ä¢ ${escapeHtml(correctionShareStamp)}` : ''}</div>
+                <div class="small" style="margin-top:4px;color:#64748B">${escapeHtml(correctionShare.label)}${correctionShareStamp ? ` ï ${escapeHtml(correctionShareStamp)}` : ''}</div>
               </td>
               <td class="text-right">
                 <div class="row-action-shell">
@@ -12892,7 +12892,7 @@ function showExamAnalysisModal(q) {
     inner.innerHTML = `
       <div class="flex justify-between items-center mb-4" style="gap:12px;flex-wrap:wrap">
         <div>
-          <h3 class="text-2xl font-bold">Exam Analysis ‚Ä¢ Facility Index</h3>
+          <h3 class="text-2xl font-bold">Exam Analysis ï Facility Index</h3>
           <div class="small">Review one subject at a time and export only the subject you open.</div>
         </div>
         <div class="flex gap-2" style="flex-wrap:wrap">
@@ -12966,13 +12966,13 @@ function showExamAnalysisModal(q) {
                   <div class="card-beautiful" style="padding:16px;margin-bottom:12px;border:1px solid #E2E8F0;box-shadow:none">
                     <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
                       <div style="font-weight:800">Question ${item.index}</div>
-                      <div style="font-weight:700;color:#334155">${facilityPercent} ‚Ä¢ ${section.label}</div>
+                      <div style="font-weight:700;color:#334155">${facilityPercent} ï ${section.label}</div>
                     </div>
                     ${renderQuestionMediaAssets(item, 'before')}
                     <div style="margin-top:10px;font-size:16px;line-height:1.6;white-space:normal;word-break:break-word" class="rich-text-output">${renderRichTextHtml(item.question || '')}</div>
                     ${renderQuestionMediaAssets(item, 'after')}
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:12px">${optionsMarkup}</div>
-                    <div class="small" style="margin-top:12px;line-height:1.7">Correct answer: <strong>${escapeHtml(item.answer || '')}</strong> ‚Ä¢ Seen: <strong>${item.seen}</strong> ‚Ä¢ Attempted: <strong>${item.attempted}</strong> ‚Ä¢ Correct: <strong>${item.correct}</strong> ‚Ä¢ Wrong: <strong>${Math.max(0, item.attempted - item.correct)}</strong></div>
+                    <div class="small" style="margin-top:12px;line-height:1.7">Correct answer: <strong>${escapeHtml(item.answer || '')}</strong> ï Seen: <strong>${item.seen}</strong> ï Attempted: <strong>${item.attempted}</strong> ï Correct: <strong>${item.correct}</strong> ï Wrong: <strong>${Math.max(0, item.attempted - item.correct)}</strong></div>
                     <div class="small" style="margin-top:6px;line-height:1.7">Topic:<div class="rich-text-output" style="font-weight:700">${renderRichTextHtml(item.topic || 'Not set')}</div></div>
                     <div class="small rich-text-output" style="margin-top:6px;line-height:1.7">Explanation: ${renderRichTextHtml(item.explanation || 'No explanation provided yet.')}</div>
                   </div>
@@ -13524,7 +13524,7 @@ function showCreateQuizModal(editQuizId = '', options = {}) {
             </div>
             <div class="subject-card-toggle-side">
               <span class="subject-card-toggle-text">Collapse</span>
-              <span class="subject-card-chevron" aria-hidden="true">‚åÑ</span>
+              <span class="subject-card-chevron" aria-hidden="true">?</span>
             </div>
           </button>
           <button type="button" class="subject-remove-btn subject-remove-inline" aria-label="Remove subject">Remove</button>
@@ -13620,7 +13620,7 @@ function showCreateQuizModal(editQuizId = '', options = {}) {
           <input type="text" class="input-beautiful signatory-title" placeholder="e.g. Principal" value="${escapeHtml(signatory.title || '')}" />
         </div>
         <label class="check-row signatory-visibility-check"><input type="checkbox" class="signatory-show-name" ${signatory.showNameOnCertificate === false ? '' : 'checked'} /> <span>Show name on certificate</span></label>
-        <button type="button" class="subject-remove-btn signatory-remove-btn" aria-label="Remove signatory">‚úï</button>
+        <button type="button" class="subject-remove-btn signatory-remove-btn" aria-label="Remove signatory">?</button>
       `;
       row.querySelector('.signatory-remove-btn').onclick = () => row.remove();
       signatoriesList.appendChild(row);
@@ -13949,7 +13949,7 @@ function showCreateQuizModal(editQuizId = '', options = {}) {
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
       if (audienceMode === 'class') selectedStudents.forEach((student) => upsertStudentForTeacher(quizOwnerId, { ...student, sourceQuizId: id }, id));
-      // Automatic per-quiz upload ‚Äî ONE attempt, no retry loop. If it fails the
+      // Automatic per-quiz upload ó ONE attempt, no retry loop. If it fails the
       // quiz just stays "Pending cloud sync" and the teacher uses the per-quiz
       // "Sync To Cloud" button (which does retry) from the quiz list.
       const singleQuizOk = await pushSingleQuizToCloud(qobj, { auto: true });
@@ -14267,7 +14267,7 @@ function getQuizAnswerMap(quiz) {
 }
 
 // Full live-question lookup so grading and the facility index can compare
-// against the latest correct answer/options/accepted-answers ‚Äî picks up any
+// against the latest correct answer/options/accepted-answers ó picks up any
 // edits the teacher made to the quiz after submissions were recorded.
 function getQuizLiveQuestionMap(quiz) {
   const map = {};
@@ -14288,7 +14288,7 @@ function getQuizLiveQuestionMap(quiz) {
 // definition rather than the snapshot stored on the submission. That way, when
 // the teacher edits the correct answer, an option's text, the yes/no answer,
 // or accepted short-answer spellings, every existing submission re-grades
-// against the new answer key ‚Äî which is exactly what the results page and
+// against the new answer key ó which is exactly what the results page and
 // facility index are expected to reflect.
 function evaluateAnswerForQuestion(question, rawAnswer, answerMap, index, liveQuestionMap) {
   const qType = normalizeQuestionType(question && question.type);
@@ -14302,7 +14302,7 @@ function evaluateAnswerForQuestion(question, rawAnswer, answerMap, index, liveQu
       // Compare by option text so option reordering or answer-letter edits are
       // honoured. The student's letter still maps to the option text they saw
       // (taken from the snapshot). If that text now matches the live correct
-      // option, count it as correct ‚Äî independent of letters.
+      // option, count it as correct ó independent of letters.
       const chosenLetter = trimmed.toUpperCase();
       const chosenIndex = chosenLetter.charCodeAt(0) - 65;
       const snapshotOptions = Array.isArray(question && question.options) ? question.options : [];
@@ -14452,7 +14452,7 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
     const meta = subjectMetaMap.get(normalizeSubjectName(section.name)) || {};
     const totalMarks = getSubjectTotalMarks({ totalMarks: meta.totalMarks, questionCount: section.total });
     const markPerQuestion = section.total > 0 ? totalMarks / section.total : 0;
-    // Essay max marks for this section = mark-per-question √ó essay count.
+    // Essay max marks for this section = mark-per-question ◊ essay count.
     section.indices.forEach((globalIndex) => {
       const question = submission.allQuestions[globalIndex];
       if (normalizeQuestionType(question && question.type) === 'essay') essayMaxMarks += markPerQuestion;
@@ -14818,7 +14818,7 @@ function computeRankingForQuiz(quizId) {
   // multiple attempts from the same student each get a distinct rank, and so
   // that submissions with empty/duplicate emails don't all collide on key ''.
   // The legacy email-keyed entry is still populated so older callers keep
-  // working ‚Äî for unique-email cases the two keys agree.
+  // working ó for unique-email cases the two keys agree.
   const ranks = {};
   for (let i = 0; i < subs.length; i++) {
     const rank = i + 1;
@@ -14928,7 +14928,7 @@ function markQuizzesCloudSynced(quizIds = [], syncedAt = new Date().toISOString(
     quizzes[quizId] = { ...quiz, cloudSyncedAt: syncedAt, updatedAt: quiz.updatedAt || syncedAt };
     changed = true;
   });
-  // cloudSyncedAt is a per-device UI marker only ‚Äî every caller of this
+  // cloudSyncedAt is a per-device UI marker only ó every caller of this
   // function has already pushed the underlying quiz via /api/quizzes/<id>
   // (or an explicit syncSharedKeys) or just confirmed it via a cloud pull, so
   // triggering save()'s bulk PUT to /api/state/quizzes here would just
@@ -14951,7 +14951,7 @@ async function endQuizNow(quizId) {
   const updatedQuiz = { ...quiz, scheduleEnd: now, endedAt: now, updatedAt: now };
   quizzes[quizId] = updatedQuiz;
   saveAllQuizzes(quizzes, { skipNetworkSync: true });
-  // Per-quiz push ‚Äî bulk PUT /api/state/quizzes is now a no-op so the bulk
+  // Per-quiz push ó bulk PUT /api/state/quizzes is now a no-op so the bulk
   // syncSharedKeys path no longer propagates the end-time change to the cloud.
   const synced = await pushSingleQuizToCloud(updatedQuiz);
   if (synced) markQuizzesCloudSynced([quizId]);
@@ -15228,7 +15228,7 @@ function showEditSubmissionScoreModal(quiz, submission) {
     preview.innerHTML = `
       <div class="score-edit-preview-label">Preview</div>
       <strong>${formatScoreValue(nextGrade.score)} / ${totalQuestions}</strong>
-      <div>${nextGrade.percent}% ‚Ä¢ ${escapeHtml(nextGrade.resultStatus)}</div>
+      <div>${nextGrade.percent}% ï ${escapeHtml(nextGrade.resultStatus)}</div>
       <div class="score-edit-preview-note">Exports will use this adjusted score until you reset it.</div>
     `;
   };
@@ -15444,7 +15444,7 @@ function renderStudentEntry() {
       // Defensive cleanup: a prior attempt may have left a snapshot interval,
       // a webcam stream, or a timer running. If we don't kill those before
       // overwriting state.currentSubmission, the references are lost and the
-      // intervals keep firing ‚Äî this is what causes "state not clearing
+      // intervals keep firing ó this is what causes "state not clearing
       // between attempts" and the after-click sluggishness.
       stopWebcam();
       if (typeof timerInterval !== 'undefined' && timerInterval) {
@@ -15570,7 +15570,7 @@ function startWebcam() {
       } else {
         const v = feed.querySelector('video'); if (v) v.srcObject = stream;
       }
-      // Record that the camera was live, at random intervals ‚Äî timestamps only.
+      // Record that the camera was live, at random intervals ó timestamps only.
       // We deliberately do NOT keep the captured frame (a base64 JPEG): nothing
       // in the app renders it, and a handful of them per submission is what blew
       // past the browser's 5 MB localStorage quota and made results vanish. If a
@@ -15642,7 +15642,7 @@ async function collectAndSubmit(options = {}) {
     sub.shareKey = getSubmissionShareKey(sub, { persist: false });
     const allSubs = getAllSubmissions(); allSubs.push(sub);
     // Keep a local copy (hasSubmittedBefore / instant-result modal / offline use)
-    // but DON'T fire the whole-array PUT /api/state/submissions ‚Äî the cloud copy
+    // but DON'T fire the whole-array PUT /api/state/submissions ó the cloud copy
     // goes up per-submission via the outbox, which also retries if the POST fails.
     saveAllSubmissions(allSubs, { skipNetworkSync: true });
     enqueueSubmissionToOutbox(sub);
@@ -15652,7 +15652,7 @@ async function collectAndSubmit(options = {}) {
     // cleanup proctoring
     try { if (document.fullscreenElement) document.exitFullscreen(); } catch(e){}
     stopWebcam();
-    // Stop the exam timer ‚Äî otherwise it ticks forever on a removed DOM node,
+    // Stop the exam timer ó otherwise it ticks forever on a removed DOM node,
     // throws on every tick, and leaks interval handles across attempts.
     if (timerInterval) { try { clearInterval(timerInterval); } catch (e) {} timerInterval = null; }
     timeRemaining = 0;
@@ -15667,7 +15667,7 @@ async function collectAndSubmit(options = {}) {
     if (quiz.showInstantResult !== false) {
       // Pull the latest submissions from the cloud BEFORE we open the result
       // modal so the displayed rank reflects every other student who has
-      // already submitted ‚Äî not just whatever happens to live in this
+      // already submitted ó not just whatever happens to live in this
       // device's localStorage. Without this, every student tends to see
       // "Rank 1" because they're the only submission their browser knows
       // about. Bounded timeout so a slow backend doesn't block the modal.
