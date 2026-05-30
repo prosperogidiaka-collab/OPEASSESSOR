@@ -6604,6 +6604,13 @@ function renderSettingsView() {
           <button id="importBackup" class="btn btn-ghost">Import Backup</button>
           <input type="file" id="importBackupInput" accept="application/json" style="display:none" />
         </div>
+        <div style="margin-top:12px">
+          <label class="small">Or paste a quiz link or portable code to restore a quiz:</label>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <input id="portableQuizInput" class="input-beautiful" placeholder="https://... or OPEQUIZ:..." />
+            <button id="importPortableQuizBtn" class="btn btn-primary">Import Quiz</button>
+          </div>
+        </div>
       </div>
       <div class="card">
         <div class="h3">Cloud Sync</div>
@@ -6731,13 +6738,34 @@ function renderSettingsView() {
             const txt = (ev && ev.target && ev.target.result) ? ev.target.result : null;
             const payload = txt ? JSON.parse(String(txt)) : null;
             if (!payload || typeof payload !== 'object') throw new Error('Invalid backup format');
+            const restored = [];
+            let ok = true;
+            // quizzes and submissions are required for a valid backup
             const quizzes = payload.quizzes || null;
             const submissions = payload.submissions || null;
             if (!quizzes || !submissions) throw new Error('Backup missing quizzes or submissions');
-            const ok1 = writeLocalStorageValue(STORAGE_KEYS.quizzes, quizzes);
-            const ok2 = writeLocalStorageValue(STORAGE_KEYS.submissions, submissions);
-            if (!ok1 || !ok2) return showNotification('Could not write backup to storage (quota or error)', 'error', 8000);
-            showNotification('Backup imported', 'success', 5000);
+            ok = ok && !!writeLocalStorageValue(STORAGE_KEYS.quizzes, quizzes);
+            if (ok) restored.push(`quizzes (${Object.keys(quizzes || {}).length})`);
+            ok = ok && !!writeLocalStorageValue(STORAGE_KEYS.submissions, submissions);
+            if (ok) restored.push(`submissions (${Array.isArray(submissions) ? submissions.length : Object.keys(submissions || {}).length})`);
+            // Optional additional state keys: teachers, students, tokenTransactions
+            if (payload.teachers) {
+              const wrote = writeLocalStorageValue(STORAGE_KEYS.teachers, payload.teachers);
+              ok = ok && !!wrote;
+              if (wrote) restored.push(`teachers (${Object.keys(payload.teachers || {}).length})`);
+            }
+            if (payload.students) {
+              const wrote = writeLocalStorageValue(STORAGE_KEYS.students, payload.students);
+              ok = ok && !!wrote;
+              if (wrote) restored.push(`students (${Object.keys(payload.students || {}).length})`);
+            }
+            if (payload.tokenTransactions) {
+              const wrote = writeLocalStorageValue(STORAGE_KEYS.tokenTransactions, payload.tokenTransactions);
+              ok = ok && !!wrote;
+              if (wrote) restored.push(`tokenTransactions (${Array.isArray(payload.tokenTransactions) ? payload.tokenTransactions.length : Object.keys(payload.tokenTransactions || {}).length})`);
+            }
+            if (!ok) return showNotification('Could not write backup to storage (quota or error)', 'error', 8000);
+            showNotification(`Backup imported: ${restored.join(', ')}`, 'success', 7000);
             try { render(); } catch (e) { /* ignore */ }
           } catch (err) {
             console.error(err);
@@ -6751,6 +6779,30 @@ function renderSettingsView() {
       };
     }
     const syncApiBaseUrlInput = document.getElementById('syncApiBaseUrlInput');
+    // Import portable quiz/link handler
+    const portableQuizInput = document.getElementById('portableQuizInput');
+    const importPortableQuizBtn = document.getElementById('importPortableQuizBtn');
+    if (importPortableQuizBtn && portableQuizInput) {
+      importPortableQuizBtn.onclick = () => {
+        const raw = (portableQuizInput.value || '').toString().trim();
+        if (!raw) return showNotification('Paste a quiz link or portable code first', 'error');
+        const access = parseQuizAccessInput(raw);
+        if (!access || (!access.link && !access.code)) return showNotification('Could not recognise the input. Paste the full link or the portable code.', 'error');
+        try {
+          const imported = resolveQuizFromAccess(access);
+          if (imported) {
+            showNotification('Quiz imported to this device', 'success', 6000);
+            setTimeout(() => { try { render(); } catch (e) {} }, 50);
+          } else {
+            showNotification('Could not import quiz from that input', 'error', 8000);
+          }
+        } catch (e) {
+          console.error(e);
+          showNotification('Error importing quiz', 'error', 8000);
+        }
+        portableQuizInput.value = '';
+      };
+    }
     const syncServerStatusText = document.getElementById('syncServerStatusText');
     const renderSyncServerStatus = (status) => {
       if (!syncServerStatusText) return;
