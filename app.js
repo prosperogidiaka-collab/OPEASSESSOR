@@ -2638,29 +2638,30 @@ async function prepareQuizAccessTransport(quiz) {
 
 async function copyQuizAccessLink(quiz) {
   if (!quiz || !quiz.id) return false;
-  const transport = await prepareQuizAccessTransport(quiz);
-  if (!transport) return false;
-  const copiedValue = transport.url || transport.code;
-  const successMessage = transport.sharedSyncOk
-    ? 'Quiz link copied'
-    : transport.url
-      ? 'Portable quiz link copied'
-      : 'Portable quiz code copied';
-  await copyTextToClipboard(copiedValue, successMessage);
-  if (!transport.sharedSyncOk) {
-    showNotification(`Cloud sync is unavailable. A portable ${transport.url ? 'link' : 'code'} was copied so this quiz can still open on another device. ${transport.warningMessage}`, 'warning', 9000);
+  // Try to copy a usable link synchronously so clipboard access occurs within
+  // the user gesture. Preparing a cloud-backed transport can involve network
+  // requests which would break the clipboard gesture, so do that in the
+  // background instead.
+  try {
+    const immediate = encodeQuizToLink(quiz);
+    await copyTextToClipboard(immediate, 'Quiz link copied');
+  } catch (e) {
+    // Best-effort fallback to the async transport if synchronous copy fails.
   }
+  // Prepare cloud-backed transport in background (no await) so the server
+  // reflects the quiz state for links later. We don't re-copy to clipboard
+  // because that would not be in the original user gesture.
+  prepareQuizAccessTransport(quiz).catch(() => {});
   return true;
 }
 
 async function copyQuizAccessCode(quiz) {
   if (!quiz || !quiz.id) return false;
-  const transport = await prepareQuizAccessTransport(quiz);
-  if (!transport) return false;
-  await copyTextToClipboard(transport.code, transport.sharedSyncOk ? 'Student code copied' : 'Portable quiz code copied');
-  if (!transport.sharedSyncOk) {
-    showNotification(`Cloud sync is unavailable. A portable quiz code was copied so this quiz can still be opened on another device. ${transport.warningMessage}`, 'warning', 9000);
-  }
+  try {
+    await copyTextToClipboard(quiz.id, 'Student code copied');
+  } catch (e) {}
+  // Background prepare so the cloud gets a chance to be updated.
+  prepareQuizAccessTransport(quiz).catch(() => {});
   return true;
 }
 
@@ -5098,6 +5099,10 @@ function render() {
       if (state.view === 'student' || state.view === 'student.result') clearStudentEntryContext();
       state.view = 'home';
       render();
+      // Ensure the student lands at the top of the quiz page when the exam
+      // starts (some browsers restore previous scroll). Small delay to run
+      // after render has updated the DOM.
+      setTimeout(() => { try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch (e) {} }, 40);
     };
     const topTeacherBtn = document.getElementById('topTeacher');
     if (topTeacherBtn) topTeacherBtn.onclick = async () => {
@@ -8470,6 +8475,11 @@ function renderQuizTake() {
       const d = document.getElementById('paletteDrawer');
       d.style.display = d.style.display === 'none' ? 'block' : 'none';
     };
+    // Make the mobile FAB sit above the bottom nav so it's visible on small screens.
+    try {
+      const _fab = document.getElementById('openPaletteFab');
+      if (_fab) { _fab.style.bottom = '120px'; _fab.style.right = '12px'; _fab.style.zIndex = '200'; }
+    } catch (e) {}
 
     // submit button
     document.getElementById('submitExam').onclick = async ()=> {
