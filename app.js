@@ -14917,54 +14917,101 @@ function showStudentResultModalFromSubmission(quiz, submission, includeActions =
   if (printBtn) printBtn.onclick = () => {
     printStudentSummary(quizData, submission);
   };
-  // If this submission was just submitted by a student, show a prominent
-  // blocking prompt asking whether they want the correction PDF. This is
-  // intentionally restricted to the student flow to avoid changing teacher
-  // behaviours.
+  // If this submission was just submitted by a student, show a blocking
+  // overlay ON TOP of the certificate that prevents any interaction with
+  // the certificate until the student chooses Yes or No. The certificate
+  // remains visible behind the overlay and is not removed or modified.
   if (submission && submission._justSubmitted && state.view === 'student' && !submission.correctionRequested) {
     try {
-      // Dim and block interaction with the underlying result until choice.
-      inner.style.filter = 'blur(2px)';
-      inner.style.pointerEvents = 'none';
-      const prompt = document.createElement('div');
-      prompt.className = 'student-result-modal';
-      prompt.id = 'studentCorrectionPrompt';
-      prompt.style.display = 'flex';
-      prompt.style.alignItems = 'center';
-      prompt.style.justifyContent = 'center';
-      prompt.style.position = 'fixed';
-      prompt.style.inset = '0';
-      prompt.style.zIndex = '9999';
-      prompt.innerHTML = `
-        <div class="card-beautiful admin-modal-card" style="width:min(560px,94vw);text-align:center;">
+      // Prevent background scrolling while overlay is open.
+      const previousBodyOverflow = document.body.style.overflow || '';
+      document.body.style.overflow = 'hidden';
+
+      const overlay = document.createElement('div');
+      overlay.id = 'studentCorrectionOverlay';
+      overlay.style.position = 'fixed';
+      overlay.style.inset = '0';
+      overlay.style.display = 'flex';
+      overlay.style.alignItems = 'center';
+      overlay.style.justifyContent = 'center';
+      overlay.style.background = 'rgba(0,0,0,0.35)';
+      overlay.style.zIndex = '10050';
+      overlay.style.webkitOverflowScrolling = 'auto';
+      overlay.innerHTML = `
+        <div class="card-beautiful admin-modal-card" style="width:min(560px,94vw);text-align:center;position:relative">
+          <button id="studentCorrectionOverlayClose" class="btn btn-ghost" style="position:absolute;right:12px;top:8px">X</button>
           <div class="h2">Request Correction PDF?</div>
           <div class="small" style="margin-top:8px;line-height:1.6">Would you like to request a correction PDF for this attempt now? Choose Yes to provide your WhatsApp number, or No to continue to the summary.</div>
-          <div style="display:flex;justify-content:center;gap:10px;margin-top:16px">
-            <button id="correctionPromptNo" class="btn btn-ghost">No, Continue</button>
-            <button id="correctionPromptYes" class="btn btn-primary">Yes, Request PDF</button>
+          <div id="studentCorrectionOverlayActions" style="display:flex;justify-content:center;gap:10px;margin-top:16px">
+            <button id="studentCorrectionOverlayNo" class="btn btn-ghost">No</button>
+            <button id="studentCorrectionOverlayYes" class="btn btn-primary">Yes</button>
           </div>
         </div>
       `;
-      document.body.appendChild(prompt);
-      const cleanupPrompt = () => {
-        try { prompt.remove(); } catch (e) {}
-        try { inner.style.filter = ''; inner.style.pointerEvents = ''; } catch (e) {}
+      // Block touchmove to prevent background scroll on mobile
+      overlay.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
+      document.body.appendChild(overlay);
+
+      const closeOverlay = () => {
+        try { overlay.remove(); } catch (e) {}
+        try { document.body.style.overflow = previousBodyOverflow; } catch (e) {}
         try { delete submission._justSubmitted; } catch (e) {}
       };
-      document.getElementById('correctionPromptNo').onclick = () => { cleanupPrompt(); };
-      document.getElementById('correctionPromptYes').onclick = () => {
-        // Open the normal correction request modal flow. When that flow saves
-        // the request it calls back to update status; we also cleanup the
-        // prompt here so the student sees the full summary afterwards.
-        showCorrectionRequestModal(quizData, submission, (updated) => {
-          cleanupPrompt();
-          // Update the in-modal status area if present.
+
+      document.getElementById('studentCorrectionOverlayClose').onclick = () => { closeOverlay(); };
+      document.getElementById('studentCorrectionOverlayNo').onclick = () => { closeOverlay(); };
+
+      document.getElementById('studentCorrectionOverlayYes').onclick = () => {
+        // Replace actions area with a small WhatsApp input + message and Save/Cancel
+        const actionsHost = document.getElementById('studentCorrectionOverlayActions');
+        if (!actionsHost) return;
+        const existingWhatsapp = normalizeWhatsappNumber(submission.whatsappNumber || getSubmissionCorrectionContact(submission).whatsapp || '');
+        actionsHost.innerHTML = `
+          <div style="display:flex;flex-direction:column;gap:8px;width:100%">
+            <label class="small" style="text-align:left">WhatsApp number</label>
+            <input id="studentOverlayWhatsapp" class="input-beautiful" placeholder="e.g. 08012345678" value="${escapeHtml(existingWhatsapp)}" />
+            <label class="small" style="text-align:left">Message for teacher (optional)</label>
+            <textarea id="studentOverlayMessage" class="input-beautiful" style="min-height:80px" placeholder="Optional message to teacher"></textarea>
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button id="studentOverlayCancel" class="btn btn-ghost">Cancel</button>
+              <button id="studentOverlaySubmit" class="btn btn-primary">Submit Request</button>
+            </div>
+          </div>
+        `;
+        document.getElementById('studentOverlayCancel').onclick = () => { closeOverlay(); };
+        document.getElementById('studentOverlaySubmit').onclick = async () => {
+          const whatsappRaw = (document.getElementById('studentOverlayWhatsapp').value || '').trim();
+          const whatsapp = normalizeWhatsappNumber(whatsappRaw);
+          const message = (document.getElementById('studentOverlayMessage').value || '').trim();
+          if (!whatsapp || whatsapp.length < 8) return showNotification('Enter a valid WhatsApp number so your teacher can send the correction PDF.', 'error', 6000);
+          // Persist the correction request into the stored submissions
+          const updated = updateLatestSubmissionByQuizAndEmail(quizData.id, submission.email, (item) => {
+            item.correctionRequested = true;
+            item.correctionRequestedAt = new Date().toISOString();
+            item.correctionMessage = message;
+            item.correctionStatus = 'pending';
+            item.correctionContact = whatsapp;
+            item.correctionContactChannel = 'whatsapp';
+            item.whatsappNumber = whatsapp;
+          });
+          if (!updated) {
+            showNotification('Unable to save correction request', 'error');
+            return;
+          }
+          // Try to sync submissions to cloud (best-effort)
+          const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
+          // Update the displayed in-modal status and request button if present
           const statusEl = document.getElementById('correctionRequestStatus');
           if (statusEl) statusEl.innerHTML = buildCorrectionRequestStatusHtml(updated);
           const requestBtnEl = document.getElementById('requestCorrectionBtn'); if (requestBtnEl) requestBtnEl.textContent = 'Update Request';
-        });
+          closeOverlay();
+          if (!sharedSyncOk) showNotification(`Correction request saved on this device. ${getSharedSyncWarningMessage()}`, 'warning', 7000);
+          else showNotification('Correction request sent to teacher', 'success', 5000);
+        };
       };
-    } catch (e) { try { delete submission._justSubmitted; } catch (er) {} }
+    } catch (e) {
+      try { delete submission._justSubmitted; } catch (er) {}
+    }
   }
   return submission;
 }
