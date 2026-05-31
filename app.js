@@ -8470,10 +8470,16 @@ function renderQuizTake() {
     };
     updateExamChrome();
 
-    // mobile FAB open
+    // mobile FAB open - ensure drawer opens scrolled to top so numbers start
+    // from 1 and not some previously scrolled position.
     document.getElementById('openPaletteFab').onclick = ()=>{
       const d = document.getElementById('paletteDrawer');
-      d.style.display = d.style.display === 'none' ? 'block' : 'none';
+      if (!d) return;
+      const showing = d.style.display !== 'block';
+      d.style.display = showing ? 'block' : 'none';
+      if (showing) {
+        try { d.scrollTop = 0; d.scrollLeft = 0; } catch (e) {}
+      }
     };
     // Make the mobile FAB sit above the bottom nav so it's visible on small screens.
     try {
@@ -14935,7 +14941,8 @@ function showStudentResultModalFromSubmission(quiz, submission, includeActions =
       overlay.style.alignItems = 'center';
       overlay.style.justifyContent = 'center';
       overlay.style.background = 'rgba(0,0,0,0.35)';
-      overlay.style.zIndex = '10050';
+      overlay.style.zIndex = '2147483647';
+      overlay.style.pointerEvents = 'auto';
       overlay.style.webkitOverflowScrolling = 'auto';
       overlay.innerHTML = `
         <div class="card-beautiful admin-modal-card" style="width:min(560px,94vw);text-align:center;position:relative">
@@ -15608,6 +15615,9 @@ function renderStudentEntry() {
         }
       });
       render();
+      // Ensure the exam view starts at the top of the page so students don't
+      // land at the bottom due to restored scroll position in some browsers.
+      setTimeout(() => { try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch (e) {} }, 40);
     };
     document.getElementById('previewLink').onclick = async ()=>{
       const q = await resolveQuizFromAccessWithSync(parseQuizAccessInput(document.getElementById('stuAccess').value || ''));
