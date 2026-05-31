@@ -14880,6 +14880,7 @@ function showStudentResultModalFromSubmission(quiz, submission, includeActions =
   if (canGradeEssays) wireEssayGradingPanel(quizData, submission);
   const closeModal = () => {
     modal.remove();
+    try { if (submission && submission._justSubmitted) delete submission._justSubmitted; } catch (e) {}
     if (state.view === 'student.result') {
       closeStudentResultLanding('home');
     }
@@ -14906,6 +14907,55 @@ function showStudentResultModalFromSubmission(quiz, submission, includeActions =
   if (printBtn) printBtn.onclick = () => {
     printStudentSummary(quizData, submission);
   };
+  // If this submission was just submitted by a student, show a prominent
+  // blocking prompt asking whether they want the correction PDF. This is
+  // intentionally restricted to the student flow to avoid changing teacher
+  // behaviours.
+  if (submission && submission._justSubmitted && state.view === 'student' && !submission.correctionRequested) {
+    try {
+      // Dim and block interaction with the underlying result until choice.
+      inner.style.filter = 'blur(2px)';
+      inner.style.pointerEvents = 'none';
+      const prompt = document.createElement('div');
+      prompt.className = 'student-result-modal';
+      prompt.id = 'studentCorrectionPrompt';
+      prompt.style.display = 'flex';
+      prompt.style.alignItems = 'center';
+      prompt.style.justifyContent = 'center';
+      prompt.style.position = 'fixed';
+      prompt.style.inset = '0';
+      prompt.style.zIndex = '9999';
+      prompt.innerHTML = `
+        <div class="card-beautiful admin-modal-card" style="width:min(560px,94vw);text-align:center;">
+          <div class="h2">Request Correction PDF?</div>
+          <div class="small" style="margin-top:8px;line-height:1.6">Would you like to request a correction PDF for this attempt now? Choose Yes to provide your WhatsApp number, or No to continue to the summary.</div>
+          <div style="display:flex;justify-content:center;gap:10px;margin-top:16px">
+            <button id="correctionPromptNo" class="btn btn-ghost">No, Continue</button>
+            <button id="correctionPromptYes" class="btn btn-primary">Yes, Request PDF</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(prompt);
+      const cleanupPrompt = () => {
+        try { prompt.remove(); } catch (e) {}
+        try { inner.style.filter = ''; inner.style.pointerEvents = ''; } catch (e) {}
+        try { delete submission._justSubmitted; } catch (e) {}
+      };
+      document.getElementById('correctionPromptNo').onclick = () => { cleanupPrompt(); };
+      document.getElementById('correctionPromptYes').onclick = () => {
+        // Open the normal correction request modal flow. When that flow saves
+        // the request it calls back to update status; we also cleanup the
+        // prompt here so the student sees the full summary afterwards.
+        showCorrectionRequestModal(quizData, submission, (updated) => {
+          cleanupPrompt();
+          // Update the in-modal status area if present.
+          const statusEl = document.getElementById('correctionRequestStatus');
+          if (statusEl) statusEl.innerHTML = buildCorrectionRequestStatusHtml(updated);
+          const requestBtnEl = document.getElementById('requestCorrectionBtn'); if (requestBtnEl) requestBtnEl.textContent = 'Update Request';
+        });
+      };
+    } catch (e) { try { delete submission._justSubmitted; } catch (er) {} }
+  }
   return submission;
 }
 
@@ -15696,7 +15746,10 @@ async function collectAndSubmit(options = {}) {
         catch (error) { console.warn('Pre-rank cloud pull failed', error); }
       }
       showNotification(`Submitted. Score: ${formatScoreValue(score)}/${formatScoreValue(getSubmissionTotalMarks(sub, quiz))} (${percent}%) - ${sub.resultStatus}`, sub.resultStatus === 'Pass' ? 'success' : 'warning', 7000);
-      setTimeout(() => showStudentResultModalFromSubmission(quiz, sub, true), 40);
+        // Mark this submission as just-submitted so the result modal can prompt
+        // the student to request a correction PDF before they continue.
+        try { sub._justSubmitted = true; } catch (e) {}
+        setTimeout(() => showStudentResultModalFromSubmission(quiz, sub, true), 40);
     } else {
       showNotification('Submitted. Result will be released by your teacher.', 'success', 7000);
     }
