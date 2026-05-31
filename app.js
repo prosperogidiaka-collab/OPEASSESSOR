@@ -8231,6 +8231,11 @@ function renderQuizTake() {
       const heading = `Question Palette � ${escapeHtml(currentSection.name)}`;
       pal.innerHTML = `<div class="small" style="margin-bottom:8px">${heading}</div><div class="palette-grid">${items.join('')}</div>`;
       drawer.innerHTML = `<div class="small" style="margin-bottom:8px">${heading}</div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">${items.join('')}</div>`;
+      try {
+        if (drawer && drawer.dataset && drawer.dataset.resetScroll) {
+          drawer.scrollTop = 0; drawer.scrollLeft = 0; delete drawer.dataset.resetScroll;
+        }
+      } catch (e) {}
       [pal, drawer].forEach((scope) => scope.querySelectorAll('.palette-item').forEach((el) => {
         el.onclick = (ev) => {
           const idx = parseInt(ev.currentTarget.dataset.index, 10);
@@ -8478,7 +8483,7 @@ function renderQuizTake() {
       const showing = d.style.display !== 'block';
       d.style.display = showing ? 'block' : 'none';
       if (showing) {
-        try { d.scrollTop = 0; d.scrollLeft = 0; } catch (e) {}
+        try { d.dataset.resetScroll = '1'; } catch (e) {}
       }
     };
     // Make the mobile FAB sit above the bottom nav so it's visible on small screens.
@@ -15617,7 +15622,22 @@ function renderStudentEntry() {
       render();
       // Ensure the exam view starts at the top of the page so students don't
       // land at the bottom due to restored scroll position in some browsers.
-      setTimeout(() => { try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch (e) {} }, 40);
+      try {
+        const ensureTop = () => {
+          try {
+            window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+            document.documentElement.scrollTop = 0;
+            document.body.scrollTop = 0;
+            const qa = document.getElementById('questionArea'); if (qa) qa.scrollIntoView({ behavior: 'auto', block: 'start' });
+            const firstCard = document.querySelector('.question-card'); if (firstCard) firstCard.scrollIntoView({ behavior: 'auto', block: 'start' });
+          } catch (e) {}
+        };
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(ensureTop, 20)));
+        } else {
+          setTimeout(ensureTop, 40);
+        }
+      } catch (e) {}
     };
     document.getElementById('previewLink').onclick = async ()=>{
       const q = await resolveQuizFromAccessWithSync(parseQuizAccessInput(document.getElementById('stuAccess').value || ''));
