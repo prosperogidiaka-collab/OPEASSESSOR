@@ -541,6 +541,18 @@ function writeLocalStorageValue(key, value) {
       return false;
     }
   }
+  // Quizzes and submissions moved to an in-memory store (window._memoryStore).
+  // Persist them there so readLocalStorageValue (which reads from _memoryStore)
+  // and other code that expects the memory-backed values see the updates.
+  if (key === STORAGE_KEYS.quizzes || key === STORAGE_KEYS.submissions) {
+    try {
+      window._memoryStore = window._memoryStore || {};
+      window._memoryStore[key] = value;
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
   try { localStorage[key] = JSON.stringify(value); return true; }
   catch(e) {
     if (isQuotaExceededError(e)) {
@@ -2995,7 +3007,14 @@ function writeSubmissionsToStorage(list, keepFramesFor = null) {
   ];
   for (let i = 0; i < attempts.length; i += 1) {
     try {
-      localStorage[STORAGE_KEYS.submissions] = JSON.stringify(attempts[i]());
+      const value = attempts[i]();
+      // Always keep an in-memory copy so the rest of the app (which reads
+      // from window._memoryStore for submissions) sees the latest data.
+      try { window._memoryStore = window._memoryStore || {}; window._memoryStore[STORAGE_KEYS.submissions] = value; } catch (e) {}
+      // Try to persist to localStorage as a best-effort for durability and
+      // debugging; failures here are tolerated because the in-memory store
+      // is the authoritative runtime copy after the migration.
+      try { localStorage[STORAGE_KEYS.submissions] = JSON.stringify(value); } catch (e) { /* ignore */ }
       if (i === 1) console.warn('Submissions storage was full � dropped webcam proctoring frames for other quizzes locally (still on the cloud).');
       if (i === 2) console.warn('Submissions storage was very full � dropped ALL webcam proctoring frames locally (still on the cloud).');
       return true;
