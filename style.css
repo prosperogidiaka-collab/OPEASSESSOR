@@ -660,7 +660,7 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 	.exam-bottom-nav{left:10px!important;right:10px!important;bottom:10px!important;transform:none!important;width:auto!important;border-radius:18px}
 	.exam-nav-btn{font-size:13px}
 	.fab-palette{right:12px;bottom:150px;width:52px;height:52px;z-index:180;font-weight:900}
-	#paletteDrawer{right:10px!important;bottom:210px!important;max-width:calc(100vw - 20px);z-index:181!important}
+	#paletteDrawer{right:10px!important;bottom:210px!important;max-width:calc(100vw - 20px);z-index:181!important;overflow:auto;max-height:calc(100vh - 260px);padding:10px}
 	.quiz-list-card{display:block!important}
 	.quiz-list-actions{justify-content:flex-start!important;margin-top:12px}
 	#teacherAccess .card-beautiful{width:calc(100vw - 24px)!important;margin:24px auto!important;max-height:calc(100vh - 48px);overflow:auto}

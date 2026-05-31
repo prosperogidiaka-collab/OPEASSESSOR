@@ -15637,6 +15637,16 @@ function renderStudentEntry() {
         } else {
           setTimeout(ensureTop, 40);
         }
+        // Repeat briefly to counter late layout shifts (images/fonts) that
+        // might push the page down after the initial scroll. Stop after 700ms.
+        try {
+          let pulses = 0;
+          const pulse = setInterval(() => {
+            try { ensureTop(); } catch (e) {}
+            pulses += 1; if (pulses > 8) try{clearInterval(pulse);}catch(e){}
+          }, 80);
+          setTimeout(() => { try { clearInterval(pulse); } catch (e) {} }, 700);
+        } catch (e) {}
       } catch (e) {}
     };
     document.getElementById('previewLink').onclick = async ()=>{
