@@ -9043,7 +9043,15 @@ async function requestServerPdfRouteExport(routePath, filename, exportOptions = 
   if (syncKeys.length && canUseNetworkSync()) {
     const keysNeedingFlush = syncKeys.filter((key) => dirtyNetworkKeys.has(key) || pendingNetworkWrites.has(key));
     if (keysNeedingFlush.length) {
-      await flushPendingNetworkWrites(keysNeedingFlush, { pullAfter: false });
+      // Attempt a best-effort flush but don't block PDF export for long.
+      // Use a short timeout so an unreliable sync server doesn't delay the
+      // user-facing PDF download (previously this could stall for minutes).
+      try {
+        await withTimeout(flushPendingNetworkWrites(keysNeedingFlush, { pullAfter: false }), 2000, false);
+      } catch (e) {
+        // Ignore flush failures/timeouts and continue with the export.
+        console.warn('Partial sync flush before PDF export timed out or failed', e);
+      }
     }
   }
   const bootstrapPayload = requestOptions.bootstrap || buildClientPdfBootstrapPayload(routePath);
