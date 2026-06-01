@@ -15032,7 +15032,7 @@ function getQuizScheduleStatus(quiz) {
   const now = Date.now();
   if (quiz.scheduleStart && new Date(quiz.scheduleStart).getTime() > now) return { ok: false, message: 'This quiz has not started yet. Start time: ' + new Date(quiz.scheduleStart).toLocaleString() };
   const effectiveEnd = getQuizEffectiveEndTime(quiz);
-  if (effectiveEnd && effectiveEnd < now) {
+  if (effectiveEnd && effectiveEnd <= now) {
     return {
       ok: false,
       message: 'This quiz has ended. End time: ' + new Date(effectiveEnd).toLocaleString()
