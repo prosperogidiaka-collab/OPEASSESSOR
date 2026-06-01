@@ -1918,10 +1918,22 @@ function applyNetworkSnapshot(snapshot) {
 const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 30000;
 // Upper bound for a single PUT body. Cloudflare Pages Functions accept much
 // larger bodies than Vercel's old ~4.5 MB cap, and Supabase's jsonb columns can
-// hold far more, so 8 MB gives image-heavy quizzes (after the on-sync image
-// shrink pass) plenty of room. Anything past this returns a clear "too large"
-// message telling the teacher to trim embedded images.
-const NETWORK_SYNC_MAX_BODY_BYTES = 8 * 1024 * 1024;
+// hold far more. Increase the limit to 16 MB to accommodate larger uploads
+// while still protecting the server from extremely large single requests.
+// We also compare against the gzipped body size when possible so compressible
+// payloads aren't rejected prematurely.
+const NETWORK_SYNC_MAX_BODY_BYTES = 16 * 1024 * 1024;
+
+function _byteLength(value) {
+  if (typeof value === 'string') {
+    try { return new TextEncoder().encode(value).length; } catch (e) { return value.length; }
+  }
+  if (value && typeof value === 'object') {
+    if (typeof value.byteLength === 'number') return value.byteLength;
+    if (typeof value.length === 'number') return value.length;
+  }
+  return 0;
+}
 
 // Gzip a JSON string with the browser's native CompressionStream so the
 // per-quiz PUT bodies (often 1�2 MB of JSON with embedded base64 images)
@@ -2172,11 +2184,17 @@ async function pushNetworkValue(key, value, options = {}) {
     markNetworkKeyDirty(key);
     return false;
   }
-  if (body.length > NETWORK_SYNC_MAX_BODY_BYTES) {
+  // Try compressing to estimate the actual wire size; accept if the gzipped
+  // size (when available) fits under the limit. Reuse the compressed body for
+  // the upload below to avoid double work.
+  let compressedCandidate;
+  try { compressedCandidate = await gzipBodyIfPossible(body); } catch (e) { compressedCandidate = { body, encoding: '' }; }
+  const candidateSize = _byteLength(compressedCandidate.body) || _byteLength(body);
+  if (candidateSize > NETWORK_SYNC_MAX_BODY_BYTES) {
     networkSyncFailed = true;
-    networkSyncFailureMessage = `Cannot upload ${key}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit. Remove embedded images or split the data, then try again.`;
+    networkSyncFailureMessage = `Cannot upload ${key}: payload is ${(candidateSize / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit. Remove embedded images or split the data, then try again.`;
     markNetworkKeyDirty(key);
-    console.error('Network sync skipped � payload too large for', key, body.length);
+    console.error('Network sync skipped � payload too large for', key, candidateSize);
     return false;
   }
   pendingNetworkWrites.add(key);
@@ -2186,10 +2204,12 @@ async function pushNetworkValue(key, value, options = {}) {
       // anonymous student-submit path: their answers ride this PUT, so a single
       // flaky request shouldn't strand the result. If both attempts fail the
       // key stays dirty for the next manual "Force Sync Now".
+      const headers = withAuthHeader({ 'Content-Type': 'application/json' });
+      if (compressedCandidate && compressedCandidate.encoding) headers['Content-Encoding'] = compressedCandidate.encoding;
       const res = await autoSyncFetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
         method: 'PUT',
-        headers: withAuthHeader({ 'Content-Type': 'application/json' }),
-        body
+        headers,
+        body: compressedCandidate ? compressedCandidate.body : body
       });
       if (res.status === 401) {
         networkSyncFailed = true;
@@ -2326,15 +2346,19 @@ async function pushSingleQuizToCloud(quiz, options = {}) {
     networkSyncFailureMessage = `Could not serialize quiz ${quiz.id} for upload: ${err && err.message ? err.message : 'unknown error'}`;
     return false;
   }
-  if (body.length > NETWORK_SYNC_MAX_BODY_BYTES) {
+  // Prefer checking the gzipped payload size where possible and reuse the
+  // compressed body below so we don't compress twice.
+  let compressed;
+  try { compressed = await gzipBodyIfPossible(body); } catch (e) { compressed = { body, encoding: '' }; }
+  const candidateSize = _byteLength(compressed.body) || _byteLength(body);
+  if (candidateSize > NETWORK_SYNC_MAX_BODY_BYTES) {
     networkSyncFailed = true;
-    networkSyncFailureMessage = `Cannot upload quiz ${quiz.id}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit. Remove embedded images, then try again.`;
+    networkSyncFailureMessage = `Cannot upload quiz ${quiz.id}: payload is ${(candidateSize / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit. Remove embedded images, then try again.`;
     return false;
   }
   try {
-    const compressed = await gzipBodyIfPossible(body);
     const headers = withAuthHeader({ 'Content-Type': 'application/json' });
-    if (compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
+    if (compressed && compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
     const requestOptions = { method: 'PUT', headers, body: compressed.body };
     const url = buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`);
     // auto = one shot (makeAbortableSyncFetch); manual = fetchWithRetry's
@@ -2416,17 +2440,20 @@ async function pushSingleQuizSubmissionsToCloud(quizId, submissions, options = {
     }
     return false;
   }
-  if (body.length > NETWORK_SYNC_MAX_BODY_BYTES) {
+  // Compress first and compare compressed size where available.
+  let compressed;
+  try { compressed = await gzipBodyIfPossible(body); } catch (e) { compressed = { body, encoding: '' }; }
+  const candidateSize = _byteLength(compressed.body) || _byteLength(body);
+  if (candidateSize > NETWORK_SYNC_MAX_BODY_BYTES) {
     if (!options.auto) {
       networkSyncFailed = true;
-      networkSyncFailureMessage = `Cannot upload submissions for quiz ${id}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit.`;
+      networkSyncFailureMessage = `Cannot upload submissions for quiz ${id}: payload is ${(candidateSize / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit.`;
     }
     return false;
   }
   try {
-    const compressed = await gzipBodyIfPossible(body);
     const headers = withAuthHeader({ 'Content-Type': 'application/json' });
-    if (compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
+    if (compressed && compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
     const url = buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`);
     const requestOptions = { method: 'PUT', headers, body: compressed.body };
     const res = options.auto
