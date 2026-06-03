@@ -11742,7 +11742,7 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
     const correct = Number(s.correct || s.correctCount || 0) || 0;
     const attempted = Number(s.attempted || s.attemptedCount || submission.attemptedCount || 0) || 0;
     const wrong = Number(s.wrong || Math.max(0, attempted - correct)) || 0;
-    return `<div class="cert-subject-row">[${name}] &nbsp; ${score}/${total} &nbsp; | &nbsp; ${pct}% &nbsp; | &nbsp; ${correct} correct &nbsp; | &nbsp; ${attempted} attempted &nbsp; | &nbsp; ${wrong} wrong</div>`;
+    return `<div class="cert-subject-row">${name} &nbsp; ${score}/${total} &nbsp; | &nbsp; ${pct}% &nbsp; | &nbsp; ${correct} correct &nbsp; | &nbsp; ${attempted} attempted &nbsp; | &nbsp; ${wrong} wrong</div>`;
   }).join('') || '<div class="cert-subject-row">[No subject data available]</div>';
 
   // Center score and QR, remove dashed separators, and bold the writeups
@@ -11751,15 +11751,19 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
   return `
     <div class="student-result-container cert-result">
       <div class="cert-inner">
-        <div class="cert-institution-wrap" style="text-align:center">
-          <div class="cert-institution-title">${institutionName || 'OGIDIAKA EDUCATIONAL FOUNDATION'}</div>
-          <div class="cert-certificate-title">OPE ASSESSOR VERIFIED RESULT CERTIFICATE</div>
-        </div>
-
-        <div class="cert-quiz-block" style="text-align:center;margin-top:8px">
-          <div class="cert-quiz-title">${quizName}</div>
-          <div class="cert-section-ribbon">RESULT SUMMARY</div>
-        </div>
+            <div class="cert-top-row" style="display:flex;align-items:center;gap:18px">
+              <div class="cert-top-logo" style="flex:0 0 auto;width:84px;height:84px;border-radius:12px;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center;border:2px solid rgba(47,128,237,.12)">
+                <img src="${APP_LOGO_SRC}" alt="logo" style="width:100%;height:100%;object-fit:cover;display:block" />
+              </div>
+              <div class="cert-institution-wrap" style="text-align:left;flex:1">
+                <div class="cert-institution-title">${institutionName || 'OGIDIAKA EDUCATIONAL FOUNDATION'}</div>
+                <div class="cert-certificate-title">OPE ASSESSOR VERIFIED RESULT CERTIFICATE</div>
+                <div class="cert-quiz-title" style="margin-top:6px">${quizName}</div>
+              </div>
+            </div>
+            <div style="width:100%;margin-top:6px;text-align:left">
+              <div class="cert-section-ribbon" style="display:inline-block">RESULT SUMMARY</div>
+            </div>
 
         <div class="cert-student-block" style="text-align:center;margin-top:12px">
           <div class="cert-label">STUDENT NAME</div>
@@ -11779,12 +11783,14 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
 
         <div class="cert-rank" style="text-align:center;margin-top:12px">RANK: ${escapeHtml(rankText)}</div>
 
-        <div class="cert-performance-overview" style="margin-top:14px;font-weight:800;font-size:14px">
-          <div class="cert-section-title" style="font-weight:900">Performance Overview</div>
-          <div class="cert-performance-list-plain" style="margin-top:6px;font-weight:800">
-            <div>- Total Score: ${escapeHtml(scoreText)}</div>
-            <div>- Percentage: ${percent}%</div>
-            <div>- Result: ${escapeHtml(gradeProfile.label)}</div>
+        <div class="cert-performance-overview" style="margin-top:14px;">
+          <div class="cert-performance-box" style="background:#EAF6FF;border:1px solid rgba(47,128,237,.12);border-radius:12px;padding:12px">
+            <div class="cert-section-title" style="font-weight:900;color:#0B3D91">Performance Overview</div>
+            <div class="cert-performance-list-plain" style="margin-top:8px;font-weight:800;color:#0F172A">
+              <div>Physics</div>
+              <div style="margin-top:6px">${escapeHtml(scoreText)} � ${percent}%</div>
+              <div style="margin-top:6px">${(submission.correctCount||0)} correct � ${(submission.attemptedCount||0)} attempted � ${formatScoreValue(getSubmissionTotalMarks(submission, quiz))} total � ${Math.max(0, (submission.attemptedCount||0) - (submission.correctCount||0))} wrong</div>
+            </div>
           </div>
         </div>
 
@@ -11828,11 +11834,11 @@ function getCertificateResultCss() {
     .cert-logo-text strong{display:block;font-size:20px;line-height:1.05;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
     .cert-logo-text span{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#1F2937;margin-top:5px;font-weight:800}
     .student-result-export-page{padding-top:12mm}
-    .cert-institution-title{font-size:36px;line-height:1.06;font-weight:900;letter-spacing:.02em;text-transform:uppercase;color:#0F172A}
+    .cert-institution-title{font-size:32px;line-height:1.06;font-weight:900;letter-spacing:.02em;text-transform:uppercase;color:#0B3D91}
     .cert-certificate-title{margin-top:6px;font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#475569}
     .cert-header-meta{margin-top:8px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#2F80ED}
     .cert-quiz-title{margin-top:10px;font-size:28px;line-height:1.08;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
-    .cert-section-ribbon{display:flex;align-items:center;justify-content:center;gap:12px;margin:20px auto 6px;width:fit-content;padding:8px 20px;border-radius:999px;background:linear-gradient(180deg,#2F80ED 0%,#1F67D8 100%);color:#ffffff;font-size:15px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;position:relative;z-index:1}
+    .cert-section-ribbon{display:inline-flex;align-items:center;justify-content:center;gap:8px;margin:6px 0;padding:6px 14px;border-radius:999px;background:linear-gradient(180deg,#2F80ED 0%,#1F67D8 100%);color:#ffffff;font-size:13px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;position:relative;z-index:1}
     .cert-section-ribbon:before,.cert-section-ribbon:after{content:"";display:block;width:88px;height:2px;background:linear-gradient(90deg,transparent,#56CCF2,#2F80ED);border-radius:999px}
     .cert-section-ribbon-secondary{margin-top:0}
     .cert-platform{text-align:center;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#5B6B84;margin-bottom:14px}
@@ -11843,15 +11849,15 @@ function getCertificateResultCss() {
     .cert-score-backdrop{position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);width:min(480px,92%);height:168px;background:
       radial-gradient(circle, rgba(86,204,242,.35) 0 2px, transparent 3px);
       background-size:12px 12px;opacity:.45;pointer-events:none}
-    .cert-score-ring{width:260px;height:260px;border-radius:50%;border:6px solid #2F80ED;background:#ffffff;display:flex;align-items:center;justify-content:center;position:relative;z-index:1}
-    .cert-score-ring-inner{width:calc(100% - 18px);height:calc(100% - 18px);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#111827;background:#ffffff}
+    .cert-score-ring{width:200px;height:200px;border-radius:50%;border:6px solid #2F80ED;background:#ffffff;display:flex;align-items:center;justify-content:center;position:relative;z-index:1}
+    .cert-score-ring-inner{width:calc(100% - 18px);height:calc(100% - 18px);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#111827;background:#ffffff;padding:6px}
     .cert-score-label{font-size:13px;font-weight:900;letter-spacing:.12em;color:#2F80ED}
     .cert-score-main{font-size:64px;font-weight:900;line-height:1.02;margin-top:6px;color:#111827}
     .cert-score-percent{font-size:44px;color:#2F80ED;font-weight:900;line-height:1.04;margin-top:4px}
-    .cert-status-badge{padding:6px 18px;border-radius:999px;font-size:13px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;background:#E8F1FF;color:#1D4ED8}
+    .cert-status-badge{padding:6px 12px;border-radius:999px;font-size:13px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;background:#E8F1FF;color:#1D4ED8;margin-top:6px}
     .cert-status-grade{background:#DBEAFE;color:#1D4ED8}
     .cert-adjusted-note{font-size:11px;color:#92400E;background:#FFF7ED;border:1px solid #FED7AA;border-radius:999px;padding:6px 12px;text-align:center}
-    .cert-rank{width:min(440px,92%);margin:2px auto 18px;text-align:center;background:linear-gradient(180deg,#56CCF2 0%,#2F80ED 100%);border:2px solid #2F80ED;color:#ffffff;border-radius:999px;padding:12px 18px;font-size:22px;font-weight:900;letter-spacing:.08em;box-shadow:0 10px 20px rgba(47,128,237,.22)}
+    .cert-rank{max-width:360px;margin:8px auto 18px;text-align:center;background:linear-gradient(180deg,#56CCF2 0%,#2F80ED 100%);border:2px solid #2F80ED;color:#ffffff;border-radius:999px;padding:8px 14px;font-size:18px;font-weight:900;letter-spacing:.08em;box-shadow:0 8px 18px rgba(47,128,237,.18)}
     .cert-remark-card{border:2px solid rgba(47,128,237,.28);background:#F8FAFC;border-radius:18px;padding:12px 14px;margin:0 0 12px}
     .cert-remark-title{font-size:14px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#2F80ED}
     .cert-remark-copy{margin-top:8px;font-size:15px;line-height:1.65;color:#1F2937}
@@ -11872,7 +11878,7 @@ function getCertificateResultCss() {
     .cert-verification-copy{flex:1;min-width:0}
     .cert-verification-label{font-size:14px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#2F80ED}
     .cert-verification-text{margin-top:8px;font-size:13px;line-height:1.55;color:#475569}
-    .cert-verification-qr{width:92px;min-width:92px;height:92px;border-radius:14px;background:#ffffff;padding:6px;border:1px solid rgba(47,128,237,.25);display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .cert-verification-qr{width:110px;min-width:110px;height:110px;border-radius:12px;background:#ffffff;padding:6px;border:1px solid rgba(47,128,237,.18);display:flex;align-items:center;justify-content:center;overflow:hidden}
     .cert-verification-qr svg{display:block;width:100%;height:100%}
     .cert-verification-fallback{font-size:11px;font-weight:700;color:#64748B;text-align:center}
     .cert-footer{text-align:center;font-weight:900;font-size:16px;margin-top:12px;color:#2F80ED}
