@@ -11901,6 +11901,10 @@ function getCertificateResultCss() {
     .rich-text-output li{margin:0 0 .25em}
     .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
     .result-action-note{width:100%;padding:12px 14px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;text-align:left}
+    /* Ensure performance and subject boxes don't overflow on small screens */
+    .cert-subject-summary-box{box-sizing:border-box}
+    .cert-performance-box{box-sizing:border-box;padding-left:12px;padding-right:12px}
+    .cert-performance-list-plain{padding-left:6px}
     @media(max-width:720px){
       .cert-inner{padding:18px 14px 16px;box-sizing:border-box}
       .cert-logo-badge{width:60px;height:60px;border-radius:18px}
@@ -11920,8 +11924,8 @@ function getCertificateResultCss() {
       .cert-top-row{flex-direction:column;align-items:center}
       .cert-top-logo{display:flex;justify-content:center;width:100%}
       .cert-student-panel,.cert-score-area,.cert-subject-summary,.cert-remark-card,.cert-details-grid{width:100%;max-width:560px;margin:8px auto}
-      .cert-subject-summary-box{overflow:visible;padding-left:8px;padding-right:8px}
-      .cert-performance-box{width:100%;box-sizing:border-box}
+      .cert-subject-summary-box{overflow:visible;padding-left:10px;padding-right:10px}
+      .cert-performance-box{width:100%;box-sizing:border-box;padding-left:14px;padding-right:14px}
       .cert-verification{flex-direction:column;align-items:flex-start}
       .cert-bottom-row{flex-direction:column;align-items:center;gap:12px}
       .cert-performance-side,.cert-signature-side{flex:0 0 auto;width:100%;max-width:560px;display:flex;justify-content:center}
