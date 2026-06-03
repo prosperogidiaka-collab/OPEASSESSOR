@@ -11424,10 +11424,6 @@ function renderCertificateVerificationMarkup(quiz, submission) {
   // Compact verification footer: small label, subtle text and a modest QR.
   return `
     <div class="cert-verification" role="note">
-      <div class="cert-verification-copy">
-        <div class="cert-verification-label">Verified digital result</div>
-        <div class="cert-verification-text">Scan to reopen the verified result</div>
-      </div>
       <div class="cert-verification-qr" aria-label="Certificate verification QR code">
         ${qrSvg || '<div class="cert-verification-fallback">QR unavailable</div>'}
       </div>
@@ -11761,8 +11757,6 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
             <div class="cert-score-ring-inner">
               <div class="cert-score-main">${escapeHtml(scoreText)}</div>
               <div class="cert-score-percent">${percent}%</div>
-              <div style="height:8px"></div>
-              <div class="cert-status-badge cert-status-grade">${escapeHtml(gradeProfile.label)}</div>
             </div>
           </div>
         </div>
@@ -11797,9 +11791,7 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
 
           <div class="cert-qr-center" style="flex:0 0 140px;display:flex;align-items:center;justify-content:center">
             <div style="text-align:center">
-              <div class="cert-section-title" style="font-weight:900;margin-bottom:6px">Verified digital result</div>
               <div class="cert-verification-qr" aria-hidden="true">${qrOnly || '<div class="cert-verification-fallback">QR unavailable</div>'}</div>
-              <div style="margin-top:8px;font-weight:700">Scan to reopen the verified result</div>
               <div style="margin-top:6px;font-size:11px;color:#64748B">Reference: ${escapeHtml(getSubmissionShareKey(submission, { persist: false }).toUpperCase())}</div>
             </div>
           </div>
@@ -11865,7 +11857,7 @@ function getCertificateResultCss() {
     .cert-detail-copy{min-width:0}
     .cert-detail-value{font-size:16px;line-height:1.45;margin-top:8px;color:#111827;word-break:break-word}
     .cert-detail-subline{font-size:12px;color:#4B5563;margin-top:6px;line-height:1.45}
-    .cert-signature-block{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;margin:16px auto 12px;color:#1F2937}
+    .cert-signature-block{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;margin:28px auto 12px;color:#1F2937}
     .cert-signature-script{width:min(220px,100%);min-height:42px;margin:0 auto -6px;display:flex;align-items:flex-end;justify-content:center}
     .cert-signature-svg{display:block;width:min(196px,100%);height:44px;overflow:visible}
     .cert-signature-line{width:min(240px,100%);border-top:2px solid #2F80ED;margin:0 auto 8px}
@@ -11923,7 +11915,10 @@ function getCertificateResultCss() {
       .cert-score-percent{font-size:30px}
       .cert-rank{font-size:20px}
       .cert-details-grid{grid-template-columns:1fr}
-      .cert-verification{flex-direction:column;align-items:flex-start}
+        .cert-verification{flex-direction:column;align-items:flex-start}
+        .cert-bottom-row{flex-direction:column;align-items:center;gap:12px}
+        .cert-performance-side,.cert-signature-side{flex:0 0 auto;width:100%;max-width:560px;display:flex;justify-content:center}
+        .cert-qr-center{flex:0 0 auto;margin:6px 0}
     }
     @media print{
       .cert-result{box-shadow:none}
