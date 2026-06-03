@@ -9552,6 +9552,9 @@ async function printHtmlAsSinglePage(html, options = {}) {
     const imgData = canvas.toDataURL('image/png');
     const safeTitle = escapeHtml(options.title || 'Print Result');
     win.document.open();
+    // Write the original HTML into the new print window (avoid embedding
+    // the canvas image which previously caused an extra attached image at
+    // the bottom of printed PDFs). Ensure A4 sizing for print.
     win.document.write(`
       <html>
         <head>
@@ -9559,37 +9562,15 @@ async function printHtmlAsSinglePage(html, options = {}) {
           <style>
             @page{size:A4 portrait;margin:6mm}
             html,body{margin:0;padding:0;background:#fff}
-            body{display:flex;justify-content:center;align-items:flex-start;background:#fff}
-            .print-image-shell{width:198mm;height:285mm;display:flex;justify-content:center;align-items:flex-start;overflow:hidden}
-            .print-image{display:block;max-width:100%;max-height:285mm;width:auto;height:auto}
-            @media print{
-              html,body{background:#fff}
-              .print-image-shell{width:100%;height:285mm}
-              .print-image{max-width:100%;max-height:285mm}
-            }
+            body{background:#fff;font-family:inherit;color:inherit}
+            #print-root{width:198mm;min-height:277mm;margin:0 auto;padding:0}
+            @media print{html,body{background:#fff}#print-root{width:100%;min-height:277mm}}
           </style>
         </head>
         <body>
-          <div class="print-image-shell">
-            <img id="printResultImage" class="print-image" src="${imgData}" alt="${safeTitle}" />
-          </div>
+          <div id="print-root">${html}</div>
           <script>
-            (function () {
-              var img = document.getElementById('printResultImage');
-              function doPrint() {
-                setTimeout(function () {
-                  window.focus();
-                  window.print();
-                }, 180);
-              }
-              if (img && img.complete) doPrint();
-              else if (img) {
-                img.addEventListener('load', doPrint, { once: true });
-                img.addEventListener('error', doPrint, { once: true });
-              } else {
-                doPrint();
-              }
-            })();
+            (function(){ setTimeout(function(){ window.focus(); window.print(); }, 180); })();
           </script>
         </body>
       </html>
@@ -11978,18 +11959,18 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
       `
     : `
-      .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff;padding-top:10mm}
-      .student-result-export-page .student-result-full{gap:8px}
+      .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff;padding-top:8mm}
+      .student-result-export-page .student-result-full{gap:6px}
       .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
-      .student-result-export-page .cert-inner{border-width:3px;padding:12mm 12mm 10mm}
-      /* Tighter typography for single-page A4 export to avoid overflow */
-      .student-result-export-page .cert-institution-title{font-size:26px}
-      .student-result-export-page .cert-quiz-title{font-size:22px}
-      .student-result-export-page .cert-student-name{font-size:32px}
-      .student-result-export-page .cert-score-ring{width:180px;height:180px}
-      .student-result-export-page .cert-score-main{font-size:44px}
-      .student-result-export-page .cert-score-percent{font-size:26px}
-      .student-result-export-page .cert-rank{font-size:18px;padding:8px 14px}
+      .student-result-export-page .cert-inner{border-width:2px;padding:8mm 10mm 8mm}
+      /* More compact typography for strict one-page A4 export */
+      .student-result-export-page .cert-institution-title{font-size:22px}
+      .student-result-export-page .cert-quiz-title{font-size:18px}
+      .student-result-export-page .cert-student-name{font-size:28px}
+      .student-result-export-page .cert-score-ring{width:150px;height:150px}
+      .student-result-export-page .cert-score-main{font-size:36px}
+      .student-result-export-page .cert-score-percent{font-size:20px}
+      .student-result-export-page .cert-rank{font-size:16px;padding:6px 12px}
       .student-result-export-page .cert-performance-section{page-break-inside:avoid;break-inside:avoid}
       `;
   return `
