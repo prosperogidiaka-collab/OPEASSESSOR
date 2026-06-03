@@ -11745,6 +11745,9 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
     return `<div class="cert-subject-row">[${name}] &nbsp; ${score}/${total} &nbsp; | &nbsp; ${pct}% &nbsp; | &nbsp; ${correct} correct &nbsp; | &nbsp; ${attempted} attempted &nbsp; | &nbsp; ${wrong} wrong</div>`;
   }).join('') || '<div class="cert-subject-row">[No subject data available]</div>';
 
+  // Center score and QR, remove dashed separators, and bold the writeups
+  const verificationUrl = buildCertificateVerificationUrl(quiz, submission);
+  const qrOnly = buildCertificateVerificationQrSvg(verificationUrl) || '';
   return `
     <div class="student-result-container cert-result">
       <div class="cert-inner">
@@ -11753,23 +11756,17 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
           <div class="cert-certificate-title">OPE ASSESSOR VERIFIED RESULT CERTIFICATE</div>
         </div>
 
-        <div class="cert-sep">----------------------------------------------------</div>
-
         <div class="cert-quiz-block" style="text-align:center;margin-top:8px">
           <div class="cert-quiz-title">${quizName}</div>
           <div class="cert-section-ribbon">RESULT SUMMARY</div>
         </div>
 
-        <div class="cert-sep">----------------------------------------------------</div>
-
-        <div class="cert-student-block" style="text-align:center;margin-top:8px">
+        <div class="cert-student-block" style="text-align:center;margin-top:12px">
           <div class="cert-label">STUDENT NAME</div>
           <div class="cert-student-name">${studentName}</div>
         </div>
 
-        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
-
-        <div class="cert-score-area" style="text-align:center;margin-top:8px">
+        <div class="cert-score-area" style="display:flex;align-items:center;justify-content:center;margin-top:16px">
           <div class="cert-score-ring">
             <div class="cert-score-ring-inner">
               <div class="cert-score-main">${escapeHtml(scoreText)}</div>
@@ -11780,39 +11777,34 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
           </div>
         </div>
 
-        <div class="cert-rank" style="text-align:center;margin-top:8px">RANK: ${escapeHtml(rankText)}</div>
+        <div class="cert-rank" style="text-align:center;margin-top:12px">RANK: ${escapeHtml(rankText)}</div>
 
-        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
-
-        <div class="cert-performance-overview" style="margin-top:8px">
-          <div class="cert-section-title">Performance Overview</div>
-          <div class="cert-performance-list-plain">
+        <div class="cert-performance-overview" style="margin-top:14px;font-weight:800;font-size:14px">
+          <div class="cert-section-title" style="font-weight:900">Performance Overview</div>
+          <div class="cert-performance-list-plain" style="margin-top:6px;font-weight:800">
             <div>- Total Score: ${escapeHtml(scoreText)}</div>
             <div>- Percentage: ${percent}%</div>
             <div>- Result: ${escapeHtml(gradeProfile.label)}</div>
           </div>
         </div>
 
-        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
-
-        <div class="cert-subject-summary" style="margin-top:8px">
-          <div class="cert-section-title">Subject Summary</div>
-          ${subjectRows}
+        <div class="cert-subject-summary" style="margin-top:12px;font-weight:800">
+          <div class="cert-section-title" style="font-weight:900">Subject Summary</div>
+          <div style="margin-top:6px">
+            ${subjectRows}
+          </div>
         </div>
 
-        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
-
-        <div class="cert-verification-block" style="text-align:center;margin-top:8px">
-          <div class="cert-section-title">Verified digital result</div>
-          <div class="cert-verification-qr" aria-hidden="true">${renderCertificateVerificationMarkup(quiz, submission)}</div>
-          <div style="margin-top:6px">Scan to reopen the verified result</div>
+        <div class="cert-verification-block" style="text-align:center;margin-top:14px">
+          <div class="cert-section-title" style="font-weight:900">Verified digital result</div>
+          <div style="margin-top:8px;display:flex;align-items:center;justify-content:center">
+            <div class="cert-verification-qr" aria-hidden="true">${qrOnly || '<div class="cert-verification-fallback">QR unavailable</div>'}</div>
+          </div>
+          <div style="margin-top:8px;font-weight:700">Scan to reopen the verified result</div>
+          <div style="margin-top:6px;font-size:11px;color:#64748B">Reference: ${escapeHtml(getSubmissionShareKey(submission, { persist: false }).toUpperCase())}</div>
         </div>
-
-        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
 
         ${buildPrimaryCertificateSignatureMarkup(quiz)}
-
-        <div class="cert-sep" style="margin-top:8px">----------------------------------------------------</div>
       </div>
     </div>
   `;
