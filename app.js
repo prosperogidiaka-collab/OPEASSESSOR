@@ -10,125 +10,48 @@ const SUPER_ADMIN_EMAIL = 'prosperogidiaka@gmail.com';
 // server-side via /api/auth/super-admin/login (see server.js). The constant below
 // remains only as a no-op marker so other tooling that referenced it still parses
 // cleanly; it is never used for authentication.
-const SUPER_ADMIN_PASSWORD = '';
-const ADMIN_CONTACT_EMAIL = SUPER_ADMIN_EMAIL;
-const STORAGE_KEYS = {
-  quizzes: 'ope_quizzes',
-  submissions: 'ope_submissions_v2',
-  // Small, append-only queue of student submissions that haven't been confirmed
-  // saved to the cloud yet (POST /api/submissions). Drained on submit, on app
-  // load, and whenever the browser comes back online. NOT part of NETWORK_SYNC_KEYS
-  // � it's a local retry buffer, never itself synced.
-  submissionOutbox: 'ope_submission_outbox_v1',
-  teacherId: 'ope_teacher_id',
-  teachers: 'ope_teachers_v1',
-  tokenTransactions: 'ope_token_transactions_v1',
-  teacherSession: 'ope_teacher_session_v1',
-  students: 'ope_teacher_students_v1',
-  appState: 'ope_app_state_v1',
-  syncApiBaseUrl: 'ope_sync_api_base_url_v1',
-  // Local-only credential cache, never synced to the server. Used so that an
-  // already-registered teacher can still authenticate offline against a hash
-  // computed and stored after their last successful online login.
-  localAuth: 'ope_local_auth_v1',
-  // Active session token returned by /api/auth/* endpoints. Only used to gate
-  // mutation calls to /api/state/<key>; cleared on logout.
-  authSession: 'ope_auth_session_v1',
-  alertState: 'ope_alert_state_v1'
-};
-const NETWORK_SYNC_KEYS = [
-  STORAGE_KEYS.quizzes,
-  STORAGE_KEYS.submissions,
-  STORAGE_KEYS.teachers,
-  STORAGE_KEYS.students,
-  STORAGE_KEYS.tokenTransactions
-];
-const NETWORK_STATE_KEY_MAP = {
-  [STORAGE_KEYS.quizzes]: 'quizzes',
-  [STORAGE_KEYS.submissions]: 'submissions',
-  [STORAGE_KEYS.teachers]: 'teachers',
-  [STORAGE_KEYS.students]: 'students',
-  [STORAGE_KEYS.tokenTransactions]: 'tokenTransactions'
-};
-// Sync is manual-only: it runs when the teacher clicks a Sync button, never on
-// a timer, focus, visibilitychange, online, or from the service worker. There
-// is still a single best-effort pull on first load so a teacher signing in on a
-// new browser sees their cloud data � that's a one-shot read, not a retry loop.
-const DEFAULT_NETWORK_SYNC_POLL_MS = 15000;
-const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
-// Cap how long the very first paint waits on the cloud pull. Keep this short
-// so a slow/cold serverless backend doesn't leave the user staring at a blank
-// screen � the app falls back to local data and a background sync still runs.
-const DEFAULT_STARTUP_SYNC_TIMEOUT_MS = 2000;
-// Teacher/admin workspaces need a longer read window than the public/student
-// routes because /api/state can legitimately include many quizzes, teachers,
-// and submissions. If the wait still expires, we let the request finish in the
-// background and force a re-render when the late result lands.
-const DEFAULT_WORKSPACE_SYNC_TIMEOUT_MS = 12000;
-const DEFAULT_TEACHER_NAV_SYNC_TIMEOUT_MS = 10000;
-const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
-const MAX_PORTABLE_LINK_LENGTH = 3500;
-const DEFAULT_SUPPORT_SETTINGS = {
-  email: ADMIN_CONTACT_EMAIL,
-  whatsapp: ''
-};
-const APP_DEVICE_ID_KEY = 'ope_app_device_id_v1';
-const APP_LOGO_SRC = '/ope-icon-192.png?v=20260525-attached-approved-3';
-const APP_INSTALL_HELP_MESSAGE = 'To install OPE Assessor, open your browser menu and choose Install app or Add to Home screen.';
-const TOKEN_PRICE_PER_QUIZ = 1000;
-const TOKEN_UNLIMITED_TRANSFER_COOLDOWN_DAYS = 30;
-const TOKEN_PACKAGE_DEFINITIONS = {
-  single: { key: 'single', label: 'Single', tokens: 1, price: 1000, useCase: 'One-off' },
-  starter: { key: 'starter', label: 'Starter', tokens: 3, price: 2700, useCase: 'Save ?300' },
-  standard: { key: 'standard', label: 'Standard', tokens: 7, price: 6000, useCase: 'Save ?1,000' },
-  pro: { key: 'pro', label: 'Pro', tokens: 15, price: 12000, useCase: 'Save ?3,000' },
-  school: { key: 'school', label: 'School', tokens: 50, price: 35000, useCase: 'Save ?15,000' },
-  'unlimited-3mo': { key: 'unlimited-3mo', label: '3-Month Unlimited', tokens: 0, price: 50000, unlimitedDays: 90, useCase: 'Unlimited quiz saving for 3 months on one registered device' }
-};
-
-function normalizeApiBaseUrl(value) {
-  return (value || '').toString().trim().replace(/\/+$/, '');
-}
-
-function readStoredSyncApiBaseUrl() {
-  if (typeof window === 'undefined') return '';
-  try {
-    return normalizeApiBaseUrl(localStorage.getItem(STORAGE_KEYS.syncApiBaseUrl) || '');
-  } catch (error) {
-    return '';
-  }
-}
-
-function readQuerySyncApiBaseUrl() {
-  if (typeof window === 'undefined') return '';
-  try {
-    const params = new URLSearchParams(window.location.search || '');
-    return normalizeApiBaseUrl(params.get('syncApiBaseUrl') || params.get('apiBaseUrl') || '');
-  } catch (error) {
-    return '';
-  }
-}
-
-function getNetworkSyncConfig() {
-  const rawConfig = typeof window !== 'undefined' && window.OPE_CONFIG && typeof window.OPE_CONFIG === 'object'
-    ? window.OPE_CONFIG
-    : {};
-  const apiBaseUrl = readQuerySyncApiBaseUrl() || readStoredSyncApiBaseUrl() || normalizeApiBaseUrl(rawConfig.apiBaseUrl);
-  const pollIntervalMs = Number(rawConfig.syncPollIntervalMs) > 0
-    ? Number(rawConfig.syncPollIntervalMs)
-    : DEFAULT_NETWORK_SYNC_POLL_MS;
-  return { apiBaseUrl, pollIntervalMs };
-}
-
-const NETWORK_SYNC_CONFIG = getNetworkSyncConfig();
-
-function buildApiUrl(path) {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return NETWORK_SYNC_CONFIG.apiBaseUrl
-    ? `${NETWORK_SYNC_CONFIG.apiBaseUrl}${normalizedPath}`
-    : normalizedPath;
-}
-
+  return `
+    /* Certificate styles: clean, centered, A4-friendly */
+    :root{--blue:#2F80ED;--dark:#0F172A;--muted:#64748B}
+    .student-result-full{display:flex;flex-direction:column;gap:10px}
+    .cert-result{background:#ffffff;color:var(--dark);border-radius:12px;padding:0;margin:0 auto;max-width:174mm}
+    .cert-inner{padding:18mm 14mm 12mm;background:linear-gradient(180deg,#ffffff 0%,#F8FAFC 100%);border-radius:12px;box-shadow:0 8px 28px rgba(47,128,237,.08)}
+    .cert-header{text-align:center;padding-top:6mm}
+    .cert-logo-badge{width:84px;height:84px;border-radius:12px;overflow:hidden;margin:0 auto;background:linear-gradient(135deg,#56CCF2,#2F80ED);border:2px solid rgba(47,128,237,.12);display:flex;align-items:center;justify-content:center}
+    .cert-institution-title{font-size:30px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:var(--dark);margin-top:8px}
+    .cert-certificate-title{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-top:4px}
+    .cert-quiz-title{font-size:20px;font-weight:800;color:var(--blue);text-transform:uppercase;margin-top:10px}
+    .cert-section-ribbon{display:inline-block;margin:14px auto;padding:8px 18px;border-radius:999px;background:linear-gradient(180deg,var(--blue),#1F5FCF);color:#fff;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+    .cert-student-panel{text-align:center;margin-top:12px}
+    .cert-label{font-weight:800;color:var(--blue);text-transform:uppercase}
+    .cert-student-name{font-size:44px;font-weight:900;margin-top:8px;color:var(--dark)}
+    .cert-score-wrap{display:flex;flex-direction:column;align-items:center;margin-top:18px}
+    .cert-score-ring{width:230px;height:230px;border-radius:50%;border:8px solid var(--blue);display:flex;align-items:center;justify-content:center;background:#fff}
+    .cert-score-main{font-size:56px;font-weight:900}
+    .cert-score-percent{font-size:32px;color:var(--blue);font-weight:900;margin-top:6px}
+    .cert-status-badge{margin-top:8px;padding:6px 14px;border-radius:999px;background:#EAF3FF;color:var(--blue);font-weight:800}
+    .cert-rank{margin-top:12px;text-align:center;font-weight:900;background:linear-gradient(180deg,#56CCF2,var(--blue));color:#fff;padding:10px 18px;border-radius:999px;display:inline-block}
+    .cert-remark-card{margin-top:12px;padding:10px 12px;background:#FAFCFF;border-radius:10px;border:1px solid rgba(47,128,237,.04)}
+    .cert-remark-title{font-size:13px;font-weight:900;color:var(--blue)}
+    .cert-remark-copy{margin-top:6px;color:var(--dark)}
+    .cert-performance-section{margin-top:12px}
+    .cert-performance-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+    .cert-performance-card{padding:10px;background:#fff;border:1px solid rgba(47,128,237,.04);border-radius:8px}
+    .cert-performance-subject{font-weight:900;color:var(--blue)}
+    .cert-verification{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:18px;padding-top:8px;border-top:1px dashed rgba(99,102,241,.06)}
+    .cert-verification .text{color:var(--muted);font-size:13px}
+    .cert-verification .qr{width:88px;height:88px;border-radius:10px;border:1px solid rgba(47,128,237,.08);display:flex;align-items:center;justify-content:center;background:#fff}
+    .cert-signature{margin-top:14px;text-align:center}
+    .cert-signature .line{height:2px;background:var(--blue);width:160px;margin:0 auto 8px}
+    .cert-signature .name{font-weight:900;color:var(--blue)}
+    @media print{
+      .cert-inner{padding:18mm 14mm 12mm}
+      .cert-score-ring{width:220px;height:220px}
+      .cert-student-name{font-size:40px}
+      .cert-quiz-title{font-size:18px}
+      .cert-institution-title{font-size:28px}
+    }
+  `;
 function getCurrentSyncServerBaseUrl() {
   if (NETWORK_SYNC_CONFIG.apiBaseUrl) return NETWORK_SYNC_CONFIG.apiBaseUrl;
   if (typeof window !== 'undefined' && /^https?:$/i.test(window.location.protocol || '')) return window.location.origin;
