@@ -11782,9 +11782,9 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
             <div class="cert-performance-box" style="background:#EAF6FF;border:1px solid rgba(47,128,237,.12);border-radius:12px;padding:12px">
               <div class="cert-section-title" style="font-weight:900;color:#0B3D91">Performance Overview</div>
               <div class="cert-performance-list-plain" style="margin-top:8px;font-weight:800;color:#0F172A">
-                <div>Total Score</div>
-                <div style="margin-top:6px">${escapeHtml(scoreText)} · ${percent}%</div>
-                <div style="margin-top:6px">${(submission.correctCount||0)} correct � ${(submission.attemptedCount||0)} attempted � ${formatScoreValue(getSubmissionTotalMarks(submission, quiz))} total � ${Math.max(0, (submission.attemptedCount||0) - (submission.correctCount||0))} wrong</div>
+                <div>Total Score: ${escapeHtml(scoreText)}</div>
+                <div style="margin-top:6px">Percentage: ${percent}%</div>
+                <div style="margin-top:6px">Result: ${escapeHtml(gradeProfile.label)}</div>
               </div>
             </div>
           </div>
@@ -11955,18 +11955,19 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
       `
     : `
-      .student-result-export-page{width:100%;background:#ffffff}
-      .student-result-export-page .student-result-full{gap:12px}
+      .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff;padding-top:8mm}
+      .student-result-export-page .student-result-full{gap:6px}
       .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
-      .student-result-export-page .cert-inner{border-width:3px;padding:8mm 8mm 10mm}
-      .student-result-export-page .cert-quiz-title{font-size:30px}
-      .student-result-export-page .cert-student-name{font-size:38px}
-      .student-result-export-page .cert-result,
-      .student-result-export-page .cert-performance-section,
-      .student-result-export-page .cert-performance-card,
-      .student-result-export-page .cert-topic-group,
-      .student-result-export-page .cert-topic-card{page-break-inside:avoid;break-inside:avoid}
-      .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
+      .student-result-export-page .cert-inner{border-width:2px;padding:8mm 10mm 8mm}
+      /* Maintain generous typography for full A4 export */
+      .student-result-export-page .cert-institution-title{font-size:22px}
+      .student-result-export-page .cert-quiz-title{font-size:18px}
+      .student-result-export-page .cert-student-name{font-size:28px}
+      .student-result-export-page .cert-score-ring{width:150px;height:150px}
+      .student-result-export-page .cert-score-main{font-size:36px}
+      .student-result-export-page .cert-score-percent{font-size:20px}
+      .student-result-export-page .cert-rank{font-size:16px;padding:6px 12px}
+      .student-result-export-page .cert-performance-section{page-break-inside:avoid;break-inside:avoid}
       `;
   return `
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220">
