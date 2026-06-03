@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Certificate Preview - EGUASA</title>
+  <style>body{margin:0;background:#f2f6fb;padding:20px 0;display:flex;justify-content:center}</style>
+</head>
+<body>
+  <div id="preview-root"></div>
+  <script src="app.js"></script>
+  <script>
+    (function(){
+      // Build sample quiz + submission payload
+      const quiz = {
+        title: 'PHYSICS QUIZ',
+        examName: 'OGIDIAKA EDUCATIONAL FOUNDATION',
+        showTopicsAfterSubmission: false
+      };
+      const submission = {
+        name: 'EGUASA',
+        score: 42,
+        percent: 60,
+        correctCount: 42,
+        attemptedCount: 59,
+        wrongCount: 17,
+        allQuestions: Array(59).fill({}),
+        subjectBreakdown: [
+          { name: 'Physics', score: 42, totalMarks: 70, percent: 60, correct: 42, attempted: 59, total: 70, wrong: 17 }
+        ]
+      };
+      // Wait a tick for app.js to define functions
+      function render(){
+        try{
+          const html = buildStudentSummaryPdfHtml(quiz, submission, { rankValue: '1', paged: false });
+          document.getElementById('preview-root').innerHTML = html;
+        }catch(e){
+          document.getElementById('preview-root').textContent = 'Preview failed: ' + e.message;
+          console.error(e);
+        }
+      }
+      if (typeof buildStudentSummaryPdfHtml === 'function') render(); else window.addEventListener('load', render);
+    })();
+  </script>
+</body>
+</html>

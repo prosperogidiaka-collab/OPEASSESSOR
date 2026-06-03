@@ -11806,7 +11806,8 @@ function getCertificateResultCss() {
     .cert-logo-text{text-align:left}
     .cert-logo-text strong{display:block;font-size:20px;line-height:1.05;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
     .cert-logo-text span{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#1F2937;margin-top:5px;font-weight:800}
-    .cert-institution-title{font-size:48px;line-height:1.04;font-weight:900;letter-spacing:.02em;text-transform:uppercase;color:#0F172A}
+    .student-result-export-page{padding-top:12mm}
+    .cert-institution-title{font-size:36px;line-height:1.06;font-weight:900;letter-spacing:.02em;text-transform:uppercase;color:#0F172A}
     .cert-certificate-title{margin-top:6px;font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#475569}
     .cert-header-meta{margin-top:8px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#2F80ED}
     .cert-quiz-title{margin-top:10px;font-size:28px;line-height:1.08;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
@@ -11816,21 +11817,21 @@ function getCertificateResultCss() {
     .cert-platform{text-align:center;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#5B6B84;margin-bottom:14px}
     .cert-student-panel{border:2px solid rgba(47,128,237,.5);background:#F8FAFC;border-radius:18px;text-align:center;padding:14px 16px;margin:0 auto}
     .cert-label,.cert-detail-label{font-weight:900;color:#2F80ED;text-transform:uppercase;letter-spacing:.08em}
-    .cert-student-name{font-size:58px;font-weight:900;letter-spacing:.04em;line-height:1.06;margin-top:8px;color:#0F172A}
+    .cert-student-name{font-size:48px;font-weight:900;letter-spacing:.04em;line-height:1.06;margin-top:8px;color:#0F172A}
     .cert-score-wrap{position:relative;display:flex;flex-direction:column;align-items:center;gap:10px;margin:18px 0 16px}
     .cert-score-backdrop{position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);width:min(480px,92%);height:168px;background:
       radial-gradient(circle, rgba(86,204,242,.35) 0 2px, transparent 3px);
       background-size:12px 12px;opacity:.45;pointer-events:none}
-    .cert-score-ring{width:220px;height:220px;border-radius:50%;border:6px solid #2F80ED;background:#ffffff;display:flex;align-items:center;justify-content:center;position:relative;z-index:1}
-    .cert-score-ring-inner{width:calc(100% - 16px);height:calc(100% - 16px);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#111827;background:#ffffff}
+    .cert-score-ring{width:260px;height:260px;border-radius:50%;border:6px solid #2F80ED;background:#ffffff;display:flex;align-items:center;justify-content:center;position:relative;z-index:1}
+    .cert-score-ring-inner{width:calc(100% - 18px);height:calc(100% - 18px);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#111827;background:#ffffff}
     .cert-score-label{font-size:13px;font-weight:900;letter-spacing:.12em;color:#2F80ED}
-    .cert-score-main{font-size:52px;font-weight:900;line-height:1.04;margin-top:6px;color:#111827}
-    .cert-score-percent{font-size:38px;color:#2F80ED;font-weight:900;line-height:1.04;margin-top:4px}
+    .cert-score-main{font-size:64px;font-weight:900;line-height:1.02;margin-top:6px;color:#111827}
+    .cert-score-percent{font-size:44px;color:#2F80ED;font-weight:900;line-height:1.04;margin-top:4px}
     .cert-status-badge{padding:6px 18px;border-radius:999px;font-size:13px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;background:#E8F1FF;color:#1D4ED8}
     .cert-status-grade{background:#DBEAFE;color:#1D4ED8}
     .cert-adjusted-note{font-size:11px;color:#92400E;background:#FFF7ED;border:1px solid #FED7AA;border-radius:999px;padding:6px 12px;text-align:center}
     .cert-rank{width:min(440px,92%);margin:2px auto 18px;text-align:center;background:linear-gradient(180deg,#56CCF2 0%,#2F80ED 100%);border:2px solid #2F80ED;color:#ffffff;border-radius:999px;padding:12px 18px;font-size:22px;font-weight:900;letter-spacing:.08em;box-shadow:0 10px 20px rgba(47,128,237,.22)}
-    .cert-remark-card{border:2px solid rgba(47,128,237,.28);background:#F8FAFC;border-radius:18px;padding:14px 16px;margin:0 0 16px}
+    .cert-remark-card{border:2px solid rgba(47,128,237,.28);background:#F8FAFC;border-radius:18px;padding:12px 14px;margin:0 0 12px}
     .cert-remark-title{font-size:14px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#2F80ED}
     .cert-remark-copy{margin-top:8px;font-size:15px;line-height:1.65;color:#1F2937}
     .cert-details-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:4px}
@@ -11934,7 +11935,7 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
       `
     : `
-        .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
+        .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff;padding-top:12mm}
         .student-result-export-page .student-result-full{gap:10px}
         .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
         .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
@@ -11943,7 +11944,7 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page .cert-performance-section{page-break-inside:avoid;break-inside:avoid}
       `;
   return `
-    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
+    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220">
       <style>
         ${getCertificateResultCss()}
         ${layoutCss}
@@ -12509,7 +12510,7 @@ function printStudentSummary(quiz, submission) {
   const rankValue = getSubmissionRank(submission, ranks) || '-';
   const html = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
   const printHtml = `
-    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
+    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220">
       <style>
         ${getCertificateResultCss()}
         .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
