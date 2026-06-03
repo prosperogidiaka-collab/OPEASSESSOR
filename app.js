@@ -11902,7 +11902,7 @@ function getCertificateResultCss() {
     .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
     .result-action-note{width:100%;padding:12px 14px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;text-align:left}
     @media(max-width:720px){
-      .cert-inner{padding:18px 14px 16px}
+      .cert-inner{padding:18px 14px 16px;box-sizing:border-box}
       .cert-logo-badge{width:60px;height:60px;border-radius:18px}
       .cert-logo-badge{margin:0 auto 8px}
       .cert-logo-text{text-align:center}
@@ -11916,10 +11916,16 @@ function getCertificateResultCss() {
       .cert-score-percent{font-size:30px}
       .cert-rank{font-size:20px}
       .cert-details-grid{grid-template-columns:1fr}
-        .cert-verification{flex-direction:column;align-items:flex-start}
-        .cert-bottom-row{flex-direction:column;align-items:center;gap:12px}
-        .cert-performance-side,.cert-signature-side{flex:0 0 auto;width:100%;max-width:560px;display:flex;justify-content:center}
-        .cert-qr-center{flex:0 0 auto;margin:6px 0}
+      /* Stack header and main certificate blocks vertically */
+      .cert-top-row{flex-direction:column;align-items:center}
+      .cert-top-logo{display:flex;justify-content:center;width:100%}
+      .cert-student-panel,.cert-score-area,.cert-subject-summary,.cert-remark-card,.cert-details-grid{width:100%;max-width:560px;margin:8px auto}
+      .cert-subject-summary-box{overflow:visible;padding-left:8px;padding-right:8px}
+      .cert-performance-box{width:100%;box-sizing:border-box}
+      .cert-verification{flex-direction:column;align-items:flex-start}
+      .cert-bottom-row{flex-direction:column;align-items:center;gap:12px}
+      .cert-performance-side,.cert-signature-side{flex:0 0 auto;width:100%;max-width:560px;display:flex;justify-content:center}
+      .cert-qr-center{flex:0 0 auto;margin:6px 0}
     }
     @media print{
       .cert-result{box-shadow:none}
@@ -11955,10 +11961,10 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
       `
     : `
-      .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff;padding-top:8mm}
+      .student-result-export-page{width:210mm;min-height:297mm;margin:0;background:#ffffff;display:flex;align-items:center;justify-content:center;padding:8mm;box-sizing:border-box}
       .student-result-export-page .student-result-full{gap:6px}
-      .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
-      .student-result-export-page .cert-inner{border-width:2px;padding:8mm 10mm 8mm}
+      .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important;width:100%;display:flex;align-items:center;justify-content:center}
+      .student-result-export-page .cert-inner{border-width:2px;padding:8mm 10mm 8mm;box-sizing:border-box;width:100%;max-width:174mm;margin:0}
       /* Maintain generous typography for full A4 export */
       .student-result-export-page .cert-institution-title{font-size:22px}
       .student-result-export-page .cert-quiz-title{font-size:18px}
