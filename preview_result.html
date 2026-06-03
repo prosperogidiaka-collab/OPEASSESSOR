@@ -32,31 +32,14 @@
       // Wait a tick for app.js to define functions
       function render(){
         try{
-          const totalMarks = (submission.subjectBreakdown && submission.subjectBreakdown[0] && submission.subjectBreakdown[0].totalMarks) || 70;
-          const scoreText = `${submission.score} / ${totalMarks}`;
-          const percent = submission.percent || 0;
-          const gradeProfile = (typeof getCertificateGradeProfile === 'function') ? getCertificateGradeProfile(percent) : { label: 'Pass' };
-          const css = (typeof getCertificateResultCss === 'function') ? getCertificateResultCss() : '';
-          const html = `
-            <div style="font-family:Segoe UI, Noto Sans, Arial, sans-serif;padding:24px;display:flex;justify-content:center">
-              <style>${css}</style>
-              <div class="cert-performance-box" style="background:#EAF6FF;border:1px solid rgba(47,128,237,.12);border-radius:12px;padding:18px;width:420px">
-                <div class="cert-section-title" style="font-weight:900;color:#0B3D91">Performance Overview</div>
-                <div class="cert-performance-list-plain" style="margin-top:12px;font-weight:800;color:#0F172A">
-                  <div>Total Score: ${escapeHtml(scoreText)}</div>
-                  <div style="margin-top:8px">Percentage: ${percent}%</div>
-                  <div style="margin-top:8px">Result: ${escapeHtml(gradeProfile.label)}</div>
-                </div>
-              </div>
-            </div>
-          `;
+          const html = buildStudentSummaryPdfHtml(quiz, submission, { rankValue: '1', paged: false });
           document.getElementById('preview-root').innerHTML = html;
         }catch(e){
           document.getElementById('preview-root').textContent = 'Preview failed: ' + e.message;
           console.error(e);
         }
       }
-      if (typeof getCertificateResultCss === 'function') render(); else window.addEventListener('load', render);
+      if (typeof buildStudentSummaryPdfHtml === 'function') render(); else window.addEventListener('load', render);
     })();
   </script>
 </body>
