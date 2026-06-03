@@ -7,14 +7,14 @@
 <style>
   :root{--blue:#2F80ED;--dark:#0F172A;--muted:#64748B}
   body{margin:0;background:#f3f7fb;padding:20px;display:flex;justify-content:center}
-  .page{width:210mm;min-height:297mm;background:#fff;padding:18mm 18mm 14mm;border-radius:4px;box-shadow:0 6px 30px rgba(15,23,42,.08);box-sizing:border-box;font-family:Inter, 'Segoe UI', Arial, sans-serif;color:var(--dark)}
+  .page{width:210mm;min-height:297mm;background:#fff;padding:18mm 18mm 14mm;border-radius:4px;box-shadow:0 6px 30px rgba(15,23,42,.08);box-sizing:border-box;font-family:Inter, 'Segoe UI', Arial, sans-serif;color:var(--dark);overflow:hidden}
   .container{max-width:174mm;margin:0 auto}
-  header{display:flex;flex-direction:column;align-items:center;gap:6px;padding-top:6mm}
-  .logo{width:84px;height:84px;border-radius:12px;overflow:hidden;background:#fff;border:2px solid rgba(47,128,237,.12);display:flex;align-items:center;justify-content:center}
+  header{display:flex;flex-direction:column;align-items:center;gap:6px;padding-top:10mm}
+  .logo{width:84px;height:84px;border-radius:12px;overflow:hidden;background:linear-gradient(135deg,#56CCF2,#2F80ED);display:flex;align-items:center;justify-content:center;border:2px solid rgba(47,128,237,.16)}
   .logo img{width:100%;height:100%;object-fit:cover;display:block}
-  .institution{font-size:32px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:var(--dark);margin-top:6px}
+  .institution{font-size:30px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:var(--dark);margin-top:6px}
   .certificate-title{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-top:2px}
-  .quiz-title{font-size:22px;font-weight:800;color:var(--blue);text-transform:uppercase;margin-top:10px}
+  .quiz-title{font-size:20px;font-weight:800;color:var(--blue);text-transform:uppercase;margin-top:8px}
   .ribbon{display:inline-block;margin:14px auto;padding:8px 18px;border-radius:999px;background:linear-gradient(180deg,var(--blue),#1F5FCF);color:#fff;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
 
   .student-block{text-align:center;margin-top:18px}
@@ -22,10 +22,10 @@
   .student-name{font-size:44px;font-weight:900;margin-top:8px}
 
   .score-area{display:flex;flex-direction:column;align-items:center;margin-top:22px;gap:8px}
-  .score-ring{width:220px;height:220px;border-radius:50%;border:6px solid var(--blue);display:flex;align-items:center;justify-content:center;background:#fff}
+  .score-ring{width:230px;height:230px;border-radius:50%;border:8px solid var(--blue);display:flex;align-items:center;justify-content:center;background:#fff}
   .score-inner{width:88%;height:88%;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center}
   .score-main{font-size:56px;font-weight:900}
-  .score-percent{font-size:30px;color:var(--blue);font-weight:900;margin-top:6px}
+  .score-percent{font-size:32px;color:var(--blue);font-weight:900;margin-top:6px}
   .status{margin-top:6px;padding:6px 14px;border-radius:999px;background:#EAF3FF;color:var(--blue);font-weight:800}
 
   .rank{margin-top:12px;text-align:center;font-weight:900;background:linear-gradient(180deg,#56CCF2,var(--blue));color:#fff;padding:10px 18px;border-radius:999px;display:inline-block}
@@ -34,7 +34,7 @@
   .section h4{margin:0;font-size:14px;color:var(--blue);font-weight:900;text-transform:uppercase}
   .section ul{margin:8px 0 0 18px;padding:0;color:var(--dark)}
   .subjects{margin-top:12px;display:flex;flex-direction:column;gap:8px}
-  .subject-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid rgba(47,128,237,.06)}
+  .subject-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid rgba(47,128,237,.08)}
   .subject-name{font-weight:800;color:var(--blue);text-transform:uppercase}
   .subject-meta{font-weight:700;color:var(--dark)}
 
@@ -55,6 +55,7 @@
     .actions{display:none}
     .page{box-shadow:none}
   }
+  @page{size:A4;margin:0}
 </style>
 </head>
 <body>
@@ -67,11 +68,13 @@
     <div class="container">
       <header>
         <div class="logo" aria-hidden="true">
-          <!-- Inline placeholder logo; replace with actual image path if available -->
-          <svg xmlns="http://www.w3.org/2000/svg" width="84" height="84" viewBox="0 0 84 84">
-            <rect width="84" height="84" rx="12" fill="#2F80ED"></rect>
-            <text x="50%" y="56%" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="700">OPE</text>
-          </svg>
+          <img src="/ope-icon-192.png?v=20260525-attached-approved-3" alt="logo" style="width:100%;height:100%;object-fit:cover;display:block" onerror="this.style.display='none';document.getElementById('logo-fallback').style.display='block'" />
+          <div id="logo-fallback" style="display:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
+            <svg xmlns="http://www.w3.org/2000/svg" width="84" height="84" viewBox="0 0 84 84">
+              <rect width="84" height="84" rx="12" fill="#2F80ED"></rect>
+              <text x="50%" y="56%" font-family="Arial" font-size="20" fill="#fff" text-anchor="middle" font-weight="700">OPE</text>
+            </svg>
+          </div>
         </div>
         <div class="institution">OGIDIAKA EDUCATIONAL FOUNDATION</div>
         <div class="certificate-title">OPE ASSESSOR VERIFIED RESULT CERTIFICATE</div>
@@ -113,8 +116,6 @@
           <h4>Subject Summary</h4>
           <div class="subjects">
             <div class="subject-row"><div class="subject-name">Physics</div><div class="subject-meta">42/70 | 60% | 42 correct | 59 attempted | 17 wrong</div></div>
-            <div class="subject-row"><div class="subject-name">Subject 2</div><div class="subject-meta">--</div></div>
-            <div class="subject-row"><div class="subject-name">Subject 3</div><div class="subject-meta">--</div></div>
           </div>
         </div>
 
