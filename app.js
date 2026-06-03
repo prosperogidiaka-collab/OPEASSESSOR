@@ -11732,58 +11732,87 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
       value: escapeHtml(ipAddress || 'Not captured')
     }
   ];
-  // Build a simplified, certificate-first layout: institution > certificate
-  // title > quiz title, then student, score badge, rank, performance, subjects,
-  // signature and a compact verification footer. Omit IP, submitted timestamp
-  // and any large reference code in the main body.
+  // Build exact text-layout certificate per user specification. Keep signature
+  // and verification footer compact. Render subject summary rows only if present.
+  const subjectRows = (submission.subjectBreakdown || submission.subjects || []).map((s) => {
+    const name = escapeHtml(s.name || s.subject || 'General');
+    const score = formatScoreValue(s.score || s.marks || submission.score || 0);
+    const total = formatScoreValue(s.totalMarks || s.total || getSubmissionTotalMarks(submission, quiz) || 0);
+    const pct = clampPercent(s.percent || s.percentScore || Math.round(((s.score || 0) / (s.totalMarks || s.total || 1)) * 100) || 0);
+    const correct = Number(s.correct || s.correctCount || 0) || 0;
+    const attempted = Number(s.attempted || s.attemptedCount || submission.attemptedCount || 0) || 0;
+    const wrong = Number(s.wrong || Math.max(0, attempted - correct)) || 0;
+    return `<div class="cert-subject-row">[${name}] &nbsp; ${score}/${total} &nbsp; | &nbsp; ${pct}% &nbsp; | &nbsp; ${correct} correct &nbsp; | &nbsp; ${attempted} attempted &nbsp; | &nbsp; ${wrong} wrong</div>`;
+  }).join('') || '<div class="cert-subject-row">[No subject data available]</div>';
+
   return `
     <div class="student-result-container cert-result">
       <div class="cert-inner">
-        <div class="cert-header" role="banner">
-          <div class="cert-header-row" style="display:flex;align-items:center;justify-content:center;gap:18px;flex-wrap:wrap">
-            <div class="cert-logo-badge" style="width:84px;height:84px;border-radius:18px;padding:6px"><img src="${APP_LOGO_SRC}" alt="logo" style="width:100%;height:100%;object-fit:cover;border-radius:12px"/></div>
-            <div style="text-align:center">
-              ${institutionName ? `<div class="cert-institution-title">${institutionName}</div>` : `<div class="cert-institution-title">OPE ASSESSOR</div>`}
-              <div class="cert-certificate-title">OPE ASSESSOR VERIFIED RESULT CERTIFICATE</div>
-            </div>
-          </div>
-          <div class="cert-quiz-title">${quizName}</div>
+        <div class="cert-institution-wrap" style="text-align:center">
+          <div class="cert-institution-title">${institutionName || 'OGIDIAKA EDUCATIONAL FOUNDATION'}</div>
+          <div class="cert-certificate-title">OPE ASSESSOR VERIFIED RESULT CERTIFICATE</div>
         </div>
 
-        <div class="cert-section-ribbon">RESULT SUMMARY</div>
+        <div class="cert-sep">----------------------------------------------------</div>
 
-        <div class="cert-student-panel">
+        <div class="cert-quiz-block" style="text-align:center;margin-top:8px">
+          <div class="cert-quiz-title">${quizName}</div>
+          <div class="cert-section-ribbon">RESULT SUMMARY</div>
+        </div>
+
+        <div class="cert-sep">----------------------------------------------------</div>
+
+        <div class="cert-student-block" style="text-align:center;margin-top:8px">
           <div class="cert-label">STUDENT NAME</div>
           <div class="cert-student-name">${studentName}</div>
         </div>
 
-        <div class="cert-score-wrap">
-          <div class="cert-score-backdrop"></div>
+        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
+
+        <div class="cert-score-area" style="text-align:center;margin-top:8px">
           <div class="cert-score-ring">
             <div class="cert-score-ring-inner">
-              <div class="cert-score-label">SCORE</div>
               <div class="cert-score-main">${escapeHtml(scoreText)}</div>
               <div class="cert-score-percent">${percent}%</div>
+              <div style="height:8px"></div>
+              <div class="cert-status-badge cert-status-grade">${escapeHtml(gradeProfile.label)}</div>
             </div>
           </div>
-          <div class="cert-status-badge cert-status-grade">${escapeHtml(gradeProfile.label)}</div>
-          ${hasAdjustedScore ? `<div class="cert-adjusted-note">${escapeHtml(adjustedNote)}</div>` : ''}
         </div>
 
-        <div class="cert-rank">RANK: ${escapeHtml(rankText)}</div>
+        <div class="cert-rank" style="text-align:center;margin-top:8px">RANK: ${escapeHtml(rankText)}</div>
 
-        <div class="cert-remark-card avoid-break">
-          <div class="cert-remark-title">${escapeHtml(gradeProfile.label)} � ${escapeHtml(gradeProfile.range)}</div>
-          <div class="cert-remark-copy">${escapeHtml(gradeProfile.remark)}</div>
+        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
+
+        <div class="cert-performance-overview" style="margin-top:8px">
+          <div class="cert-section-title">Performance Overview</div>
+          <div class="cert-performance-list-plain">
+            <div>- Total Score: ${escapeHtml(scoreText)}</div>
+            <div>- Percentage: ${percent}%</div>
+            <div>- Result: ${escapeHtml(gradeProfile.label)}</div>
+          </div>
         </div>
 
-        ${buildStudentResultSupplementHtml(quiz, submission)}
+        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
+
+        <div class="cert-subject-summary" style="margin-top:8px">
+          <div class="cert-section-title">Subject Summary</div>
+          ${subjectRows}
+        </div>
+
+        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
+
+        <div class="cert-verification-block" style="text-align:center;margin-top:8px">
+          <div class="cert-section-title">Verified digital result</div>
+          <div class="cert-verification-qr" aria-hidden="true">${renderCertificateVerificationMarkup(quiz, submission)}</div>
+          <div style="margin-top:6px">Scan to reopen the verified result</div>
+        </div>
+
+        <div class="cert-sep" style="margin-top:12px">----------------------------------------------------</div>
 
         ${buildPrimaryCertificateSignatureMarkup(quiz)}
 
-        ${renderCertificateVerificationMarkup(quiz, submission)}
-
-        <div class="cert-footer">Verified Digital Result � Generated by OPE Assessor</div>
+        <div class="cert-sep" style="margin-top:8px">----------------------------------------------------</div>
       </div>
     </div>
   `;
