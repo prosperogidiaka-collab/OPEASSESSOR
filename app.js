@@ -11935,13 +11935,19 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
       `
     : `
-        .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff;padding-top:12mm}
-        .student-result-export-page .student-result-full{gap:10px}
-        .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
-        .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
-        .student-result-export-page .cert-quiz-title{font-size:32px}
-        .student-result-export-page .cert-student-name{font-size:40px}
-        .student-result-export-page .cert-performance-section{page-break-inside:avoid;break-inside:avoid}
+      .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff;padding-top:10mm}
+      .student-result-export-page .student-result-full{gap:8px}
+      .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
+      .student-result-export-page .cert-inner{border-width:3px;padding:12mm 12mm 10mm}
+      /* Tighter typography for single-page A4 export to avoid overflow */
+      .student-result-export-page .cert-institution-title{font-size:26px}
+      .student-result-export-page .cert-quiz-title{font-size:22px}
+      .student-result-export-page .cert-student-name{font-size:32px}
+      .student-result-export-page .cert-score-ring{width:180px;height:180px}
+      .student-result-export-page .cert-score-main{font-size:44px}
+      .student-result-export-page .cert-score-percent{font-size:26px}
+      .student-result-export-page .cert-rank{font-size:18px;padding:8px 14px}
+      .student-result-export-page .cert-performance-section{page-break-inside:avoid;break-inside:avoid}
       `;
   return `
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220">
