@@ -5666,6 +5666,7 @@ function renderTeacherAuth() {
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
         <button id="btnTeacherLogin" class="btn btn-primary">Login</button>
         <button id="btnTeacherCreate" class="btn btn-ghost">Create Teacher ID</button>
+        <button id="btnTeacherForgot" class="btn btn-ghost">Forgot password?</button>
       </div>
     </div>
   `;
@@ -5683,6 +5684,16 @@ function renderTeacherAuth() {
       if (loginBtn) loginBtn.textContent = busy && mode === 'login' ? 'Syncing...' : 'Login';
       if (createBtn) createBtn.textContent = busy && mode === 'create' ? 'Creating...' : 'Create Teacher ID';
     };
+
+    const forgotHandler = () => {
+      const email = normalizeEmail(idInput?.value || '');
+      if (!email) return showNotification('Enter your teacher email ID to reset password', 'error');
+      // Informational flow: server-side password reset not available here; contact admin.
+      showModal('Password reset', `<div class="small">If you forgot your password, please contact your institution administrator to reset it. Provide this email: <strong>${escapeHtml(email)}</strong></div>`);
+    };
+
+    const forgotBtn = document.getElementById('btnTeacherForgot');
+    if (forgotBtn) forgotBtn.onclick = forgotHandler;
 
     const login = async (createMode = false) => {
       const id = normalizeEmail(idInput?.value);
@@ -11943,7 +11954,7 @@ function getCertificateResultCss() {
 
 function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
   const rankValue = (options.rankValue || '').toString().trim() || (getSubmissionRank(submission, computeRankingForQuiz(submission.quizId)) || '-');
-  const resultHtml = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
+  const resultHtml = buildStudentResultSummaryCardHtml(quiz, submission, rankValue, { includeActions: false });
   // `paged` mode is used when there's a topic-by-topic breakdown: the page is
   // allowed to flow onto extra A4 sheets (no forced 297mm min-height), and the
   // topic section is forced to start on a fresh page so the summary keeps page
@@ -11954,7 +11965,7 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page{width:100%;background:#ffffff}
         .student-result-export-page .student-result-full{gap:12px}
         .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
-        .student-result-export-page .cert-inner{border-width:3px;padding:8mm 8mm 10mm}
+        .student-result-export-page .cert-inner{border-width:3px;padding:12mm 14mm;box-sizing:border-box}
         .student-result-export-page .cert-quiz-title{font-size:30px}
         .student-result-export-page .cert-student-name{font-size:38px}
         .student-result-export-page .cert-result,
@@ -11965,10 +11976,10 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
       `
     : `
-      .student-result-export-page{width:210mm;min-height:297mm;margin:0;background:#ffffff;display:flex;align-items:center;justify-content:center;padding:8mm;box-sizing:border-box}
+      .student-result-export-page{width:100%;min-height:297mm;margin:0;background:#ffffff;display:flex;align-items:center;justify-content:center;padding:0;box-sizing:border-box}
       .student-result-export-page .student-result-full{gap:6px}
       .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important;width:100%;display:flex;align-items:center;justify-content:center}
-      .student-result-export-page .cert-inner{border-width:2px;padding:8mm 10mm 8mm;box-sizing:border-box;width:100%;max-width:174mm;margin:0}
+      .student-result-export-page .cert-inner{border-width:2px;padding:12mm 14mm;box-sizing:border-box}
       /* Maintain generous typography for full A4 export */
       .student-result-export-page .cert-institution-title{font-size:22px}
       .student-result-export-page .cert-quiz-title{font-size:18px}
