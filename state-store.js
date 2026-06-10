@@ -741,10 +741,35 @@ function createSupabaseStateStore(options) {
       throw new Error(`Unsupported state key: ${stateKey}`);
     },
     async putStateValue(stateKey, incomingValue) {
-      // Writes still go through the admin path: the upstream merge needs the
-      // full current value to avoid clobbering other tenants' rows. Per-row
-      // ownership enforcement happens at the API layer (see server.js auth
-      // gating + functions/api/quizzes/[id].js ownership checks), not here.
+      // Writes previously fetched the full admin-state (entire table) before
+      // merging and persisting. That causes heavy DB IO for large tables when
+      // many writes occur. For fairly-scoped state keys like `quizzes` and
+      // `teachers` we can fetch only the existing rows for the incoming keys
+      // and merge those, avoiding a full-table read. For other keys we keep
+      // the existing behaviour to preserve merge semantics.
+      if (stateKey === 'quizzes' || stateKey === 'teachers') {
+        const ids = Object.keys(incomingValue || {});
+        let currentSubset = {};
+        if (ids.length > 0) {
+          const table = stateKey === 'quizzes' ? tables.quizzes : tables.teachers;
+          const idColumn = stateKey === 'quizzes' ? 'quiz_id' : 'teacher_id';
+          const columns = stateKey === 'quizzes' ? SUPABASE_SELECT_COLUMNS.quizzes : SUPABASE_SELECT_COLUMNS.teachers;
+          const { data, error } = await supabase.from(table).select(columns).in(idColumn, ids);
+          if (error) {
+            const wrapped = new Error(`Supabase select failed for ${table}: ${error.message}`);
+            wrapped.supabaseCode = error.code || '';
+            wrapped.cause = error;
+            throw wrapped;
+          }
+          if (data && data.length) {
+            currentSubset = stateKey === 'quizzes' ? rowsToQuizMap(data) : rowsToTeacherMap(data);
+          }
+        }
+        const nextValue = mergeStateValue(stateKey, currentSubset, incomingValue || {});
+        await persistStateValue(stateKey, nextValue);
+        return nextValue;
+      }
+      // Fallback: preserve original behaviour for complex state keys.
       const currentValue = await this.getStateValue(stateKey, buildAdminScope());
       const nextValue = mergeStateValue(stateKey, currentValue, incomingValue);
       await persistStateValue(stateKey, nextValue);
