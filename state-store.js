@@ -769,6 +769,88 @@ function createSupabaseStateStore(options) {
         await persistStateValue(stateKey, nextValue);
         return nextValue;
       }
+      if (stateKey === 'students') {
+        const teacherIds = Object.keys(incomingValue || {});
+        let currentSubset = {};
+        if (teacherIds.length > 0) {
+          const { data, error } = await supabase.from(tables.students).select(SUPABASE_SELECT_COLUMNS.students).in('teacher_id', teacherIds);
+          if (error) {
+            const wrapped = new Error(`Supabase select failed for ${tables.students}: ${error.message}`);
+            wrapped.supabaseCode = error.code || '';
+            wrapped.cause = error;
+            throw wrapped;
+          }
+          if (data && data.length) currentSubset = rowsToStudentMap(data);
+        }
+        const nextValue = mergeStateValue(stateKey, currentSubset, incomingValue || {});
+        await persistStateValue(stateKey, nextValue);
+        return nextValue;
+      }
+      if (stateKey === 'submissions') {
+        const incomingList = Array.isArray(incomingValue) ? incomingValue : [];
+        const submissionIds = incomingList.map((it) => it && it.submissionId).filter(Boolean);
+        const quizIds = incomingList.map((it) => normalizeKey(it && it.quizId)).filter(Boolean);
+        const rows = [];
+        if (submissionIds.length > 0) {
+          const { data, error } = await supabase.from(tables.submissions).select(SUPABASE_SELECT_COLUMNS.submissions).in('submission_id', submissionIds);
+          if (error) {
+            const wrapped = new Error(`Supabase select failed for ${tables.submissions}: ${error.message}`);
+            wrapped.supabaseCode = error.code || '';
+            wrapped.cause = error;
+            throw wrapped;
+          }
+          if (data && data.length) rows.push(...data);
+        }
+        if (quizIds.length > 0) {
+          const { data, error } = await supabase.from(tables.submissions).select(SUPABASE_SELECT_COLUMNS.submissions).in('quiz_id', quizIds);
+          if (error) {
+            const wrapped = new Error(`Supabase select failed for ${tables.submissions}: ${error.message}`);
+            wrapped.supabaseCode = error.code || '';
+            wrapped.cause = error;
+            throw wrapped;
+          }
+          if (data && data.length) rows.push(...data);
+        }
+        // Deduplicate by submission_id
+        const uniq = new Map();
+        rows.forEach((r) => { if (r && r.submission_id) uniq.set(r.submission_id, r); });
+        const currentSubsetList = rowsToSubmissionList(Array.from(uniq.values()));
+        const nextValue = mergeStateValue(stateKey, currentSubsetList, incomingList || []);
+        await persistStateValue(stateKey, nextValue);
+        return nextValue;
+      }
+      if (stateKey === 'tokenTransactions') {
+        const incomingList = Array.isArray(incomingValue) ? incomingValue : [];
+        const txnIds = incomingList.map((it) => it && it.id).filter(Boolean);
+        const userIds = incomingList.map((it) => normalizeLowerKey(it && it.userId)).filter(Boolean);
+        const rows = [];
+        if (txnIds.length > 0) {
+          const { data, error } = await supabase.from(tables.tokenTransactions).select(SUPABASE_SELECT_COLUMNS.tokenTransactions).in('transaction_id', txnIds);
+          if (error) {
+            const wrapped = new Error(`Supabase select failed for ${tables.tokenTransactions}: ${error.message}`);
+            wrapped.supabaseCode = error.code || '';
+            wrapped.cause = error;
+            throw wrapped;
+          }
+          if (data && data.length) rows.push(...data);
+        }
+        if (userIds.length > 0) {
+          const { data, error } = await supabase.from(tables.tokenTransactions).select(SUPABASE_SELECT_COLUMNS.tokenTransactions).in('user_id', userIds);
+          if (error) {
+            const wrapped = new Error(`Supabase select failed for ${tables.tokenTransactions}: ${error.message}`);
+            wrapped.supabaseCode = error.code || '';
+            wrapped.cause = error;
+            throw wrapped;
+          }
+          if (data && data.length) rows.push(...data);
+        }
+        const uniq = new Map();
+        rows.forEach((r) => { if (r && r.transaction_id) uniq.set(r.transaction_id, r); });
+        const currentSubsetList = rowsToTokenTransactionList(Array.from(uniq.values()));
+        const nextValue = mergeStateValue(stateKey, currentSubsetList, incomingList || []);
+        await persistStateValue(stateKey, nextValue);
+        return nextValue;
+      }
       // Fallback: preserve original behaviour for complex state keys.
       const currentValue = await this.getStateValue(stateKey, buildAdminScope());
       const nextValue = mergeStateValue(stateKey, currentValue, incomingValue);
