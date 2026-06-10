@@ -6718,14 +6718,25 @@ function renderSettingsView() {
         <div class="card-header"><h3>Super Admin - Teacher Accounts</h3></div>
         <div class="small" style="margin:12px 0">Teacher ID, name, and phone number stay visible here. Token balances stay inside the action dropdown.</div>
         <input id="teacherSearch" class="input-beautiful" placeholder="Search teacher ID, name, or phone..." style="margin-bottom:12px" />
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+          <input id="teacherSelectAll" type="checkbox" />
+          <label class="small" style="margin:0 8px 0 0">Select all</label>
+          <select id="teacherAdminBulkActionSelect" class="input-beautiful" style="min-width:220px">
+            <option value="">Bulk action</option>
+            <option value="grant-license">Grant Tokens / Unlimited</option>
+            <option value="stop-license">Clear Unlimited</option>
+            <option value="reset-password">Reset Password</option>
+          </select>
+          <button id="btnApplyTeacherAdminBulkAction" class="btn btn-primary btn-sm">Apply to selected</button>
+        </div>
         <div class="table-wrap">
           <table class="table-dense">
-            <thead><tr><th>Teacher ID</th><th>Name</th><th>Phone Number</th><th>Role</th><th>Access</th><th>Request</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th><input id="teacherHeaderCheckbox" type="checkbox" /></th><th>Teacher ID</th><th>Name</th><th>Phone Number</th><th>Role</th><th>Access</th><th>Request</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody id="teacherAdminRows">${teacherRows.map(t => {
               const id = t.teacherId || t.email;
               const rowSearch = [id, getTeacherDisplayName(t, { preferPlaceholder: true }), getTeacherPhoneLabel(t)].join(' ').toLowerCase();
-              return `<tr data-teacher-row="${escapeHtml(rowSearch)}"><td>${escapeHtml(id)}</td><td>${escapeHtml(getTeacherDisplayName(t, { preferPlaceholder: true }))}</td><td>${escapeHtml(getTeacherPhoneLabel(t))}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(getTeacherAdminAccessSummary(t))}</td><td>${t.tokenRequestedAt ? new Date(t.tokenRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><div class="row-action-shell"><select class="input-beautiful row-action-select teacherAdminActionSelect" data-id="${escapeHtml(id)}"><option value="">Choose action</option><option value="view-account">View Token Details</option><option value="view-exams">View Exams</option><option value="view-students">Students</option><option value="grant-license">Grant Tokens / Unlimited</option><option value="transfer-unlimited-device">Transfer Unlimited Device</option><option value="stop-license">Clear Unlimited</option><option value="reset-password">Reset Password</option><option value="change-id">Change ID</option></select><button class="btn btn-ghost btn-sm btnApplyTeacherAdminAction" data-id="${escapeHtml(id)}">Apply</button></div></td></tr>`;
-            }).join('') || '<tr><td colspan="8">No teachers yet.</td></tr>'}</tbody>
+              return `<tr data-teacher-row="${escapeHtml(rowSearch)}"><td><input type="checkbox" class="teacherSelectCheckbox" data-id="${escapeHtml(id)}" /></td><td>${escapeHtml(id)}</td><td>${escapeHtml(getTeacherDisplayName(t, { preferPlaceholder: true }))}</td><td>${escapeHtml(getTeacherPhoneLabel(t))}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(getTeacherAdminAccessSummary(t))}</td><td>${t.tokenRequestedAt ? new Date(t.tokenRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><div class="row-action-shell"><select class="input-beautiful row-action-select teacherAdminActionSelect" data-id="${escapeHtml(id)}"><option value="">Choose action</option><option value="view-account">View Token Details</option><option value="view-exams">View Exams</option><option value="view-students">Students</option><option value="grant-license">Grant Tokens / Unlimited</option><option value="transfer-unlimited-device">Transfer Unlimited Device</option><option value="stop-license">Clear Unlimited</option><option value="reset-password">Reset Password</option><option value="change-id">Change ID</option></select><button class="btn btn-ghost btn-sm btnApplyTeacherAdminAction" data-id="${escapeHtml(id)}">Apply</button></div></td></tr>`;
+            }).join('') || '<tr><td colspan="9">No teachers yet.</td></tr>'}</tbody>
           </table>
         </div>
       </div>
@@ -7143,6 +7154,54 @@ function renderSettingsView() {
       }
       if (actionSelect) actionSelect.value = '';
     });
+
+    // Bulk selection handlers
+    const teacherSelectAll = document.getElementById('teacherSelectAll');
+    if (teacherSelectAll) {
+      teacherSelectAll.onclick = () => {
+        const checked = !!teacherSelectAll.checked;
+        document.querySelectorAll('.teacherSelectCheckbox').forEach(cb => { cb.checked = checked; });
+      };
+    }
+    // Header checkbox mirrors select-all
+    const teacherHeaderCheckbox = document.getElementById('teacherHeaderCheckbox');
+    if (teacherHeaderCheckbox) {
+      teacherHeaderCheckbox.onclick = () => {
+        const checked = !!teacherHeaderCheckbox.checked;
+        document.querySelectorAll('.teacherSelectCheckbox').forEach(cb => { cb.checked = checked; });
+        if (teacherSelectAll) teacherSelectAll.checked = checked;
+      };
+    }
+
+    const bulkApplyBtn = document.getElementById('btnApplyTeacherAdminBulkAction');
+    const bulkSelect = document.getElementById('teacherAdminBulkActionSelect');
+    if (bulkApplyBtn && bulkSelect) {
+      bulkApplyBtn.onclick = async () => {
+        if (!isSuperAdmin()) return;
+        const action = bulkSelect.value || '';
+        if (!action) return showNotification('Choose a bulk action first', 'error');
+        const selected = Array.from(document.querySelectorAll('.teacherSelectCheckbox:checked')).map(cb => normalizeEmail(cb.dataset.id || ''));
+        if (!selected.length) return showNotification('Select one or more teachers first', 'error');
+        if (!confirmTeacherAction(`Apply "${action}" to ${selected.length} teacher(s)? This runs the same per-teacher action for each selected account.`)) return;
+        // For each selected teacher, set the row action and trigger the existing handler
+        for (const tid of selected) {
+          const sel = document.querySelector(`.teacherAdminActionSelect[data-id="${tid}"]`);
+          const btn = document.querySelector(`.btnApplyTeacherAdminAction[data-id="${tid}"]`);
+          if (sel && btn) {
+            sel.value = action;
+            // give the UI breathing room for prompts per teacher
+            try { btn.click(); } catch (e) { console.warn('Bulk action click failed for', tid, e); }
+            // small delay so sequential prompts don't overlap
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => setTimeout(r, 120));
+          }
+        }
+        bulkSelect.value = '';
+        document.querySelectorAll('.teacherSelectCheckbox').forEach(cb => { cb.checked = false; });
+        if (teacherSelectAll) teacherSelectAll.checked = false;
+        if (teacherHeaderCheckbox) teacherHeaderCheckbox.checked = false;
+      };
+    }
   }, 0);
   return container;
 }
@@ -8543,9 +8602,25 @@ function renderQuizTake() {
     const timerEl = document.getElementById('examTimer');
     // if timeRemaining already set, update display; otherwise compute from q.timeLimit
     if (!timeRemaining || state.currentSubmission.quizId !== q.id) {
-      let totalMinutes = q.timeLimit || 0;
-      timeRemaining = (totalMinutes || 0) * 60;
-      startTime = Date.now();
+      const baseMinutes = Number(q.timeLimit || 0) || 0;
+      const extended = Number(state.currentSubmission?.extendedMinutes || 0) || 0;
+      // If this submission has a recorded startedAt (resumed attempt), compute remaining
+      if (state.currentSubmission && state.currentSubmission.startedAt) {
+        try {
+          const startedAtTs = new Date(state.currentSubmission.startedAt).getTime();
+          const totalSeconds = (baseMinutes + extended) * 60;
+          const elapsed = Math.floor((Date.now() - startedAtTs) / 1000);
+          const remainingSeconds = Math.max(0, totalSeconds - elapsed);
+          timeRemaining = remainingSeconds;
+          startTime = Date.now();
+        } catch (e) {
+          timeRemaining = (baseMinutes + extended) * 60;
+          startTime = Date.now();
+        }
+      } else {
+        timeRemaining = (baseMinutes + extended) * 60;
+        startTime = Date.now();
+      }
     }
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(()=> {
@@ -12803,6 +12878,8 @@ function renderResultsView() {
                     <option value="download-correction">Download Correction</option>
                     <option value="send-email">Send Email</option>
                     <option value="send-whatsapp">Send WhatsApp</option>
+                    <option value="reopen">Reopen For Resume</option>
+                    <option value="extend-time">Extend Time</option>
                     <option value="delete">Delete Result</option>
                   </select>
                   <button class="btn-pastel-secondary btnApplySubmissionAction" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Apply</button>
@@ -12974,6 +13051,54 @@ function renderResultsView() {
           const sharedSyncOk = await pushSingleQuizSubmissionsToCloud(quizId, quizSubs);
           showNotification(sharedSyncOk ? 'Submission deleted' : `Submission deleted on this device. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
           render();
+        }
+        if (action === 'reopen') {
+          if (!confirmTeacherAction('Reopen this submitted attempt so the student can resume the exam?')) return;
+          const all = getAllSubmissions({ includeDeleted: true });
+          const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
+          if (index < 0) return showNotification('Submission not found', 'error');
+          // Mark as reopened: clear submittedAt so the student can resume from draft,
+          // but keep answers, shuffle and monitoring intact.
+          all[index] = {
+            ...all[index],
+            reopened: true,
+            reopenedAt: new Date().toISOString(),
+            // Clear final submitted timestamp so student entry logic treats it as resumable
+            submittedAt: '',
+            updatedAt: new Date().toISOString()
+          };
+          save(STORAGE_KEYS.submissions, all);
+          const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === quizId);
+          const sharedSyncOk = await pushSingleQuizSubmissionsToCloud(quizId, quizSubs);
+          showNotification(sharedSyncOk ? 'Submission reopened for resume' : `Reopened locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
+          render();
+          return;
+        }
+        if (action === 'extend-time') {
+          const minutesStr = window.prompt('Enter additional time in minutes to add for this student (e.g. 10)');
+          if (minutesStr == null) return;
+          const minutes = parseInt(minutesStr, 10) || 0;
+          if (minutes <= 0) return showNotification('Enter a positive number of minutes', 'error');
+          if (!confirmTeacherAction(`Add ${minutes} minute(s) to this student's allowed time? This will make the attempt resumable.`)) return;
+          const all = getAllSubmissions({ includeDeleted: true });
+          const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
+          if (index < 0) return showNotification('Submission not found', 'error');
+          const existing = all[index] || {};
+          const next = {
+            ...existing,
+            reopened: true,
+            reopenedAt: new Date().toISOString(),
+            extendedMinutes: (Number(existing.extendedMinutes || 0) + Number(minutes)) || minutes,
+            submittedAt: '',
+            updatedAt: new Date().toISOString()
+          };
+          all[index] = next;
+          save(STORAGE_KEYS.submissions, all);
+          const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === quizId);
+          const sharedSyncOk = await pushSingleQuizSubmissionsToCloud(quizId, quizSubs);
+          showNotification(sharedSyncOk ? 'Time extended and submission reopened' : `Extended locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
+          render();
+          return;
         }
       };
       const wireSubmissionActionButtons = () => {
@@ -14345,13 +14470,13 @@ document.addEventListener('visibilitychange', ()=>{
 // =================== Submission Locking & Ranking ===================
 function hasSubmittedBefore(quizId, email) {
   const target = normalizeEmail(email);
-  const hit = (s) => s && s.quizId === quizId && normalizeEmail(s.email) === target;
+  const hit = (s) => s && s.quizId === quizId && normalizeEmail(s.email) === target && s.submittedAt && !s.reopened;
   return getAllSubmissions().some(hit) || getSubmissionOutbox().some(hit);
 }
 
 function getAttemptCount(quizId, email) {
   const key = normalizeEmail(email);
-  return getAllSubmissions().filter(s => s.quizId === quizId && normalizeEmail(s.email) === key).length;
+  return getAllSubmissions().filter(s => s.quizId === quizId && normalizeEmail(s.email) === key && s.submittedAt && !s.reopened).length;
 }
 
 function getDraftKey(quizId, email) {
@@ -15680,8 +15805,22 @@ function renderStudentEntry() {
       state.view = 'take';
       // set student details into submission placeholder
       state.currentSubmission = { name, email: studentKey, registrationNo, correctionContact: email || '', correctionContactChannel: email ? 'email' : '', whatsappNumber: '', answers: {}, flagged: {}, quizId: quiz.id, allQuestions: [], currentIndex: 0, examStarted: false, startedAt: '', snapshots: [], attemptNo: usedAttempts + 1, monitoring: { tabSwitches: 0, fullscreenExits: 0, copyAttempts: 0, screenshotAttempts: 0, webcamEnabled: false, ipAddress: '', userAgent: navigator.userAgent || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '', deviceId: getAppDeviceId(), ipCapturedAt: '' } };
+      // If teacher reopened an attempt, prefer that submission's saved state
+      // so the student resumes exactly where they left off (answers, shuffle,
+      // currentIndex, and startedAt). Fall back to a local draft if present.
+      const reopenedSub = getAllSubmissions().slice().reverse().find((s) =>
+        s && s.quizId === quiz.id && normalizeEmail(s.email) === normalizeEmail(studentKey) && !!s.reopened && !s.deletedAt
+      );
       const draft = loadExamDraft(quiz.id, studentKey);
-      if (draft && confirm('A saved exam draft was found. Resume from where you stopped?')) {
+      if (reopenedSub) {
+        state.currentSubmission.answers = reopenedSub.answers || {};
+        state.currentSubmission.flagged = reopenedSub.flagged || {};
+        state.currentSubmission.currentIndex = Number(reopenedSub.currentIndex || 0);
+        state.currentSubmission.startedAt = reopenedSub.startedAt || reopenedSub.submittedAt || '';
+        if (Array.isArray(reopenedSub.allQuestions) && reopenedSub.allQuestions.length) state.currentSubmission.allQuestions = reopenedSub.allQuestions;
+        if (reopenedSub.attemptNo) state.currentSubmission.attemptNo = reopenedSub.attemptNo;
+        if (reopenedSub.extendedMinutes) state.currentSubmission.extendedMinutes = Number(reopenedSub.extendedMinutes || 0);
+      } else if (draft && confirm('A saved exam draft was found. Resume from where you stopped?')) {
         state.currentSubmission.answers = draft.answers || {};
         state.currentSubmission.flagged = draft.flagged || {};
         state.currentSubmission.currentIndex = draft.currentIndex || 0;
